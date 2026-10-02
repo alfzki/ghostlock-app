@@ -59,7 +59,8 @@ internal class AndroidProfileConfigController(
         val route = routeNameOf(full)
         val fallbackTo = fallbackTargetOf(full)
         val invalidPaths = validateProfileFields(full, route, fallbackTo) +
-            ProfileResolver.validateMerged(full, route, fallbackTo).mapTo(mutableSetOf()) { it.fieldPath }
+            ProfileResolver.validateMerged(full, route, fallbackTo).mapTo(mutableSetOf()) { it.fieldPath } +
+            setOfNotNull(KnownUnrunnableReleases[deviceRelease])
         /* Invalid fields missing from the resolved document still get a row,
          * otherwise the run stays blocked with no red field to fix. */
         materializeInvalidPaths(full, invalidPaths)
@@ -848,6 +849,34 @@ internal class AndroidProfileConfigController(
 
     internal companion object {
         private const val BuiltinDirectory = "kernel_profiles"
+
+        /**
+         * Releases whose profile parses and validates but must never be
+         * executed, keyed by exact `uname -r` (same match rule as the app).
+         *
+         * These are NOT removed from `index.conf`: that file is also the
+         * resolution registry, and dropping an entry makes the profile
+         * unresolvable (`hasProfile=false`), which is a different state from
+         * "known unrunnable" and breaks the golden/migration suites. Instead the
+         * profile stays resolvable and inspectable, and the release is surfaced
+         * through [ProfileConfig.invalidPaths] so the existing pre-execution
+         * guard in `AndroidGhostlockRepository` refuses to run it and the UI
+         * shows the reason.
+         *
+         * Add an entry only when a device gate has PROVEN the kernel panics.
+         */
+        private val KnownUnrunnableReleases = mapOf(
+            // 6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k (Vivo V2514, MTK6993).
+            // All three W1 routes are blocked: select_stack needs write window
+            // [14,27] but the kernel's on-stack fd_set only offers [0,14];
+            // tcp_zerocopy hardcodes 6.1-compact task/lock offsets; the
+            // multicast stamp's ip_setsockopt copy window is absent on this
+            // build. Three cold-boot gates all ended in kernel_panic.
+            // See docs/development/tcp-zerocopy-6x-plan.md.
+            "6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k" to
+                "no working W1 route on this kernel (see docs/development/tcp-zerocopy-6x-plan.md)",
+        )
+
         private val RouteCommonRequired = listOf(
             "offset.init_task", "offset.init_cred", "offset.root_task_group", "offset.selinux_enforcing",
             "task_struct.prio", "task_struct.pi_lock", "task_struct.pi_waiters", "task_struct.pi_blocked_on",

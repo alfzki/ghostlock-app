@@ -62,6 +62,19 @@ class BuiltinProfilesTest {
             for (entry in entries) {
                 val config = controller.load(entry.release, pair)
                 assertTrue("${entry.release}: profile did not resolve", config.hasProfile)
+                val gate = KNOWN_UNRUNNABLE[entry.release]
+                if (gate != null) {
+                    /* Deliberately unrunnable: the profile must still resolve and
+                     * stay inspectable, and it must carry exactly the refusal
+                     * reason and nothing else. A field-level regression here
+                     * would be masked by the gate, so require it to be clean. */
+                    assertEquals(
+                        "${entry.release}: expected only the unrunnable gate",
+                        setOf(gate),
+                        config.invalidPaths,
+                    )
+                    continue
+                }
                 assertEquals(
                     "${entry.release}: invalid fields ${config.invalidPaths}",
                     emptySet<String>(),
@@ -167,5 +180,12 @@ class BuiltinProfilesTest {
         assertEquals(1L, (cred["usage_value"] as Number).toLong())
         assertEquals(-1L, (cred["caps_value"] as Number).toLong())
         assertEquals(4L, (snitch["collisions"] as Number).toLong())
+    }
+
+    private companion object {
+        val KNOWN_UNRUNNABLE = mapOf(
+            "6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k" to
+                "no working W1 route on this kernel (see docs/development/tcp-zerocopy-6x-plan.md)",
+        )
     }
 }
