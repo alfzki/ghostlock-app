@@ -224,13 +224,16 @@ pub fn conf_route_geometry(
         {
             vec![("compact_waiter", 1)]
         }
-        // The 5.x one-shot multicast branch runs entirely from probe-derived
-        // constants (waiter_off / buffer_size), BTF-derived rt_mutex_waiter
-        // task/lock offsets and the fixed 5.x waiter-layout flag. Emit all of
-        // them for every 5.x kernel so the generated profile runs without
-        // manual edits; a kernel without BTF omits only the task/lock keys.
+        // The 5.x multicast branch keeps only what this image can supply: the
+        // BTF-derived rt_mutex_waiter task/lock offsets and the waiter-layout
+        // flag. The frame/copy-window constants (`waiter_off` / `buffer_size`)
+        // are added by the caller only after the static derivation from the
+        // image succeeds, so an unverified candidate never inherits the
+        // hardware-probed 5.x constants.
         "multicast_waiter" if major == Some(5) => {
-            crate::derive::multicast_geometry_corroborated(structs)
+            let mut geometry = crate::derive::multicast_geometry_btf_only(structs);
+            geometry.push(("compact_waiter", 1));
+            geometry
         }
         _ => Vec::new(),
     }
@@ -549,12 +552,16 @@ mod tests {
                 (0x98, 0xffffffc00ab23b28),
             ],
         };
-        let geometry = conf_route_geometry(
+        let mut geometry = conf_route_geometry(
             "multicast_waiter",
             "5.15.189-android13-8-00016-g51bba4309aac-ab14546557",
             Some(-2),
             &structs,
         );
+        // The frame/copy-window constants are added only from this image's
+        // static derivation, exactly as main.rs does on success.
+        geometry.insert(0, ("waiter_off", 96));
+        geometry.insert(1, ("buffer_size", 264));
         let out = render_conf(&ConfInputs {
             release: "5.15.189-android13-8-00016-g51bba4309aac-ab14546557",
             phys: None,
@@ -614,8 +621,6 @@ mod tests {
                 &structs
             ),
             vec![
-                ("waiter_off", 96),
-                ("buffer_size", 264),
                 ("task_offset", 48),
                 ("lock_offset", 56),
                 ("compact_waiter", 1),
@@ -638,9 +643,11 @@ mod tests {
             conf_route_geometry("select_stack", "6.7.1-generic", Some(-1), &structs),
             vec![("waiter_shift", -1)]
         );
-        // Every 5.x multicast profile carries the full one-shot geometry so it
-        // runs without manual edits, even when the release string carries no
-        // "-android13-" train tag.
+        // Every 5.x multicast profile keeps the BTF-derived waiter field
+        // offsets and the layout flag, but never the hardware-probed
+        // frame/copy-window constants: those are added only by the image's
+        // static derivation, even when the release carries no "-android13-"
+        // train tag.
         assert_eq!(
             conf_route_geometry(
                 "multicast_waiter",
@@ -649,8 +656,6 @@ mod tests {
                 &structs
             ),
             vec![
-                ("waiter_off", 96),
-                ("buffer_size", 264),
                 ("task_offset", 48),
                 ("lock_offset", 56),
                 ("compact_waiter", 1),
@@ -667,8 +672,8 @@ mod tests {
             Some(-2),
             &structs,
         );
-        assert!(geometry.contains(&("waiter_off", 96)));
-        assert!(geometry.contains(&("buffer_size", 264)));
+        assert!(!geometry.iter().any(|(key, _)| *key == "waiter_off"));
+        assert!(!geometry.iter().any(|(key, _)| *key == "buffer_size"));
         assert!(geometry.contains(&("task_offset", 48)));
         assert!(geometry.contains(&("lock_offset", 56)));
         assert!(geometry.contains(&("compact_waiter", 1)));
@@ -723,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn unverified_5x_candidate_is_runnable() {
+    fn unverified_5x_candidate_omits_the_frame_constants() {
         let (symbols, structs) = conf_fixture();
         let geometry = conf_route_geometry(
             "multicast_waiter",
@@ -742,8 +747,10 @@ mod tests {
             cred: &[],
             extra_offsets: &no_extra_offsets(),
         });
-        assert!(out.contains("multicast_waiter {\n    waiter_off = 96"));
-        assert!(out.contains("buffer_size = 264"));
+        // Without this image's static derivation the unverified candidate must
+        // not borrow the hardware-probed frame/copy-window constants.
+        assert!(!out.contains("waiter_off"));
+        assert!(!out.contains("buffer_size"));
         assert!(out.contains("task_offset = 48"));
         assert!(out.contains("lock_offset = 56"));
         assert!(out.contains("compact_waiter = 1"));
@@ -891,7 +898,11 @@ mod tests {
     #[test]
     fn a301so_generated_conf_matches_the_bundled_profile() {
         let (release, symbols, structs, cred, extra) = a301so_inputs();
-        let geometry = conf_route_geometry("multicast_waiter", &release, None, &structs);
+        let mut geometry = conf_route_geometry("multicast_waiter", &release, None, &structs);
+        // A301SO's static derivation reproduces the hardware-probed 0x60, so
+        // the generated profile carries the same constants as the bundled one.
+        geometry.insert(0, ("waiter_off", 96));
+        geometry.insert(1, ("buffer_size", 264));
         let generated = render_conf(&ConfInputs {
             release: &release,
             phys: None,

@@ -600,10 +600,12 @@ fn run(cli: &Cli) -> Result<i32> {
                 report::conf_route_geometry(route, release_text, pselect_shift, &struct_offsets)
             })
             .unwrap_or_default();
-        // 5.x multicast: replace the proven-constant waiter_off with the value
-        // statically derived from this image's setsockopt/futex stack frames.
-        // No device or root is involved; the A301SO image reproduces its
-        // hardware-probed 0x60.
+        // 5.x multicast: the frame/copy-window constants (`waiter_off` /
+        // `buffer_size`) are image-derived. They are emitted only when the
+        // static derivation from this image's setsockopt/futex stack frames
+        // succeeds; otherwise the candidate stays without them instead of
+        // borrowing the hardware-probed A301SO 0x60. No device or root is
+        // involved; the A301SO image reproduces its hardware-probed 0x60.
         if route.as_deref() == Some("multicast_waiter") {
             const MCAST_BUFFER_SIZE: u64 = 264;
             const RT_MUTEX_WAITER_PI_TREE_ENTRY: u64 = 0x18;
@@ -620,15 +622,12 @@ fn run(cli: &Cli) -> Result<i32> {
                          (setsockopt depth 0x{:x} - futex depth 0x{:x})",
                         geom.waiter_off, geom.setsockopt_depth, geom.waiter_depth
                     );
-                    for entry in geometry.iter_mut() {
-                        if entry.0 == "waiter_off" {
-                            entry.1 = geom.waiter_off as i64;
-                        }
-                    }
+                    geometry.insert(0, ("waiter_off", geom.waiter_off as i64));
+                    geometry.insert(1, ("buffer_size", MCAST_BUFFER_SIZE as i64));
                 }
                 Err(err) => eprintln!(
                     "warning: static multicast waiter_off derivation failed: {err}; \
-                     keeping the proven 5.x constant"
+                     omitting the frame/copy-window geometry (the candidate stays incomplete)"
                 ),
             }
         }
