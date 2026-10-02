@@ -101,6 +101,7 @@ int32_t main(void) {
     values.credential.caps_value = 0xffffffffffffffffULL;
     values.offsets.init_task = 0x20dc000;
     values.offsets.slide_boot_id = 0x2336600;
+    values.offsets.off_vr_sys_exit_tp = 0x21a1020;
     values.misc.compact_waiter = 1;
     values.misc.kernelsnitch_collisions = 4;
     values.misc.mm_struct_sz = 0x400;
@@ -123,6 +124,7 @@ int32_t main(void) {
     assert(parsed.credential.caps_value == 0xffffffffffffffffULL);
     assert(parsed.offsets.init_task == 0x20dc000);
     assert(parsed.offsets.slide_boot_id == 0x2336600);
+    assert(parsed.offsets.off_vr_sys_exit_tp == 0x21a1020);
     assert(parsed.misc.compact_waiter.value_or(0) == 1);
     assert(parsed.misc.kernelsnitch_collisions.value_or(0) == 4);
     assert(parsed.misc.mm_struct_sz.value_or(0) == 0x400);
