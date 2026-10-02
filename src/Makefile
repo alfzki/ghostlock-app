@@ -40,6 +40,7 @@ CXX_SRCS := \
   core/session/root_child_frontend.cpp \
   core/session/backend/cve_2026_43499_backend.cpp \
   core/session/ancillary/ancillary_controller.cpp \
+  core/session/ancillary/vr_guard.cpp \
   core/session/handoff_probe.cpp \
   core/session/victim_process.cpp \
   core/session/victim_context.cpp \
@@ -231,7 +232,8 @@ $(HOST_BUILD_DIR)/route_policy_test: core/tests/route_policy_test.cpp core/route
 $(HOST_BUILD_DIR)/ancillary_test: core/tests/ancillary_test.cpp \
   core/session/ancillary/ancillary_policy.hpp core/session/ancillary/vr_guard.hpp \
   core/session/ancillary/ancillary_controller.hpp core/session/exploit_session.hpp \
-  core/profile/model.h core/support/status.hpp
+  core/profile/model.h core/support/status.hpp core/kernel/target.h \
+  core/kernel/target_constants.hpp core/kernel/offset.h
 	@mkdir -p $(HOST_BUILD_DIR)
 	$(HOST_CXX) $(HOST_CXXFLAGS) -ffunction-sections -fdata-sections $(HOST_LD_GC) -Icore core/tests/ancillary_test.cpp -o $@
 

@@ -45,9 +45,11 @@ Where the pieces live:
 - `memory/`: address resolution, heap/page state and route-neutral payload
   encoding.
 - `session/`: one-invocation state owner (`exploit_session.*`, which carries the
-  per-field ownership contract), runtime configuration, the frontend handoff
-  (`root_child_frontend.*`), stage types, handoff probes and the victim pipe
-  context.
+  per-field ownership contract), runtime configuration, the ancillary behavior
+  controller (`ancillary/`: policies, the registry/dispatcher and the vr.ko guard —
+  behaviors outside the exploit path, see `docs/analysis/ancillary-controller-guide.md`),
+  the frontend handoff (`root_child_frontend.*`), stage types, handoff probes and the
+  victim pipe context.
 - `profile/`: the GLK1 v2 transport (object sections: `binary.cpp` / `model.h`),
   its typed model, accessors and entry points.
 - `kernel/`: target ABI, constants and offset tables.

@@ -29,13 +29,20 @@ namespace ghostlock::session::ancillary {
         PreHandoff = 2,
     };
 
-    /* Capabilities a behavior needs from the backend: the write primitive and the
-     * stage-R read-back. Injected at the call site so this header stays
-     * host-compilable; the flags stay false until stage C wires the backend
-     * primitives into the controller. */
+    /* Capabilities a behavior needs from the backend: the write primitive, the
+     * stage-R read-back, the address of the task the behavior must protect, and
+     * the runtime applicability decision (guide section 5). Injected at the call
+     * site so this header stays host-compilable; every flag defaults to false so
+     * a caller that does not inject a capability fails closed. */
     struct AncillaryContext {
         bool write_available = false;
         bool read_available = false;
+        /* Whether the vendor component a behavior targets is actually loaded.
+         * The profile gate is only a pre-set: the same GKI release ships from
+         * several vendors, so a behavior records its runtime decision here and
+         * does nothing when the component is absent. */
+        bool component_present = false;
+        uintptr_t child_task = 0;
     };
 
     /* Neutral defaults so the controller can walk every registered behavior. A

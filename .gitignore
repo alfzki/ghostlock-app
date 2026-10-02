@@ -19,3 +19,6 @@ target/
 /.codex/
 /src/.codex/config.toml
 /ghostlock *
+
+# agent scratch (ulw notepad / drafts)
+.omo/
