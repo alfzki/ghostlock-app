@@ -141,6 +141,9 @@ const CONF_OFFSET_FIELDS: &[&str] = &[
     "slide_nfulnl_logger",
     "slide_loggers_0_1",
     "slide_boot_id",
+    // PR #221: rendered only when the symbol resolved; conf_offsets drops it when
+    // absent, and conf_lookup then renders an explicit null.
+    "off_vr_sys_exit_tp",
 ];
 
 /// Looks up a key in `(key, value)` entries, or `"null"` when absent.
@@ -298,6 +301,13 @@ pub struct ConfInputs<'a> {
     pub route_geometry: &'a [(&'static str, i64)],
     pub cred: &'a [(String, String)],
     pub extra_offsets: &'a ConfExtraOffsets,
+    /// BTF-derived `offsetof(struct tracepoint, funcs)`, the one value the
+    /// vivo vr.ko bypass cannot infer from the kernel release. Evidence only:
+    /// the extractor never writes the `enabled` gate, because
+    /// `__tracepoint_sys_exit` exists on every kernel that has the sys_exit
+    /// tracepoint, so its presence says nothing about whether `vr.ko` is
+    /// installed. Enabling the behavior stays a support-list decision.
+    pub vr_funcs_offset: Option<u32>,
 }
 
 /// Renders a flattened, self-contained GLK profile (`--format conf`): no
@@ -426,6 +436,18 @@ pub fn render_conf(input: &ConfInputs<'_>) -> String {
         .collect();
     push_conf_block(&mut lines, "offset", &offset);
 
+    // vr.ko support evidence: the tracepoint layout, decimal for the same
+    // reason the other offsets are (HOCON has no 0x literal; getLongAt accepts
+    // a Number only). Emitted without `enabled` so an import never turns the
+    // behavior on by itself.
+    if let Some(funcs) = input.vr_funcs_offset {
+        push_conf_block(
+            &mut lines,
+            "vr_guard",
+            &[("funcs_offset".to_string(), funcs.to_string())],
+        );
+    }
+
     lines.join("\n") + "\n"
 }
 
@@ -475,6 +497,7 @@ mod tests {
         let mut symbols: BTreeMap<String, Option<u64>> = BTreeMap::new();
         symbols.insert("off_init_task".to_string(), Some(34_595_456));
         symbols.insert("off_security_hook_heads".to_string(), Some(0));
+        symbols.insert("off_vr_sys_exit_tp".to_string(), Some(35_262_496));
         symbols.insert("off_absent".to_string(), None);
         let mut structs: BTreeMap<String, Option<u32>> = BTreeMap::new();
         structs.insert("task_prio".to_string(), Some(132));
@@ -485,6 +508,40 @@ mod tests {
 
     fn no_extra_offsets() -> ConfExtraOffsets {
         ConfExtraOffsets::default()
+    }
+
+    #[test]
+    fn conf_carries_btf_tracepoint_layout_but_never_enables_vr_guard() {
+        let (symbols, structs) = conf_fixture();
+        let geometry: Vec<(&'static str, i64)> = vec![("waiter_shift", 0)];
+        let render = |vr_funcs_offset: Option<u32>| {
+            render_conf(&ConfInputs {
+                release: "6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k",
+                phys: None,
+                phys_offset: None,
+                symbols: &symbols,
+                structs: &structs,
+                route: Some("select_stack"),
+                route_geometry: &geometry,
+                cred: &conf_cred_6x(),
+                extra_offsets: &no_extra_offsets(),
+                vr_funcs_offset,
+            })
+        };
+
+        // BTF gave 0x48 on this kernel; emitted decimal so the Kotlin reader
+        // parses it as a Number.
+        let out = render(Some(72));
+        assert!(out.contains("vr_guard {\n  funcs_offset = 72\n}"));
+        // The gate is a support-list decision: __tracepoint_sys_exit exists on
+        // any kernel with the sys_exit tracepoint, so the extractor must never
+        // turn the behavior on by itself.
+        assert!(!out.contains("enabled"));
+
+        // No BTF, no section, and no placeholders.
+        let without = render(None);
+        assert!(!without.contains("vr_guard"));
+        assert!(!without.contains("funcs_offset"));
     }
 
     #[test]
@@ -501,6 +558,7 @@ mod tests {
             route_geometry: &geometry,
             cred: &conf_cred_6x(),
             extra_offsets: &no_extra_offsets(),
+            vr_funcs_offset: None,
         });
         assert!(!out.contains("include"));
         assert!(out.contains("kernel_phys_load = 1073741824"));
@@ -515,6 +573,10 @@ mod tests {
         assert!(out.contains("caps_value = -1"));
         assert!(out.contains("init_task = 34595456"));
         assert!(out.contains("security_hook_heads = 0"));
+        // PR #221: registering the symbol is not enough -- a profile rendered
+        // without this key leaves the runtime offset at 0 and silently skips the
+        // vr.ko neutralization, so the conf rendering path is asserted here.
+        assert!(out.contains("off_vr_sys_exit_tp = 35262496"));
         assert!(!out.contains("off_absent"));
     }
 
@@ -532,6 +594,7 @@ mod tests {
             route_geometry: &geometry,
             cred: &conf_cred_6x(),
             extra_offsets: &no_extra_offsets(),
+            vr_funcs_offset: None,
         });
         assert!(out.contains("tcp_zerocopy {\n    compact_waiter = 1"));
         assert!(out.contains("mm_struct_sz = 1024"));
@@ -574,6 +637,7 @@ mod tests {
             extra_offsets: &ConfExtraOffsets {
                 empty_zero_page: Some(47_529_984),
             },
+            vr_funcs_offset: None,
         });
         assert!(out.contains("multicast_waiter {\n    waiter_off = 96"));
         assert!(out.contains("buffer_size = 264"));
@@ -702,6 +766,7 @@ mod tests {
             extra_offsets: &ConfExtraOffsets {
                 empty_zero_page: None,
             },
+            vr_funcs_offset: None,
         });
         assert!(out.contains("route {"));
         assert!(out.contains("multicast_waiter {"));
@@ -721,6 +786,7 @@ mod tests {
             route_geometry: &[],
             cred: &[],
             extra_offsets: &no_extra_offsets(),
+            vr_funcs_offset: None,
         });
         assert!(out.contains("kernelsnitch {"));
         assert!(out.contains("collisions = null"));
@@ -746,11 +812,14 @@ mod tests {
             route_geometry: &geometry,
             cred: &[],
             extra_offsets: &no_extra_offsets(),
+            vr_funcs_offset: None,
         });
         // Without this image's static derivation the unverified candidate must
-        // not borrow the hardware-probed frame/copy-window constants.
-        assert!(!out.contains("waiter_off"));
-        assert!(!out.contains("buffer_size"));
+        // not borrow the hardware-probed frame/copy-window constants. The route
+        // field universe is complete, so the keys are still rendered -- with a
+        // null value, which the app's pre-execution validation rejects.
+        assert!(out.contains("waiter_off = null"));
+        assert!(out.contains("buffer_size = null"));
         assert!(out.contains("task_offset = 48"));
         assert!(out.contains("lock_offset = 56"));
         assert!(out.contains("compact_waiter = 1"));
@@ -913,6 +982,7 @@ mod tests {
             route_geometry: &geometry,
             cred: &cred,
             extra_offsets: &extra,
+            vr_funcs_offset: None,
         });
         let bundled = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),

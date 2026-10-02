@@ -325,6 +325,10 @@ fn run(cli: &Cli) -> Result<i32> {
         );
     }
 
+    // BTF is the only per-kernel source for offsetof(struct tracepoint, funcs);
+    // the vr.ko bypass must not guess it from the kernel release (PR #221).
+    let vr_funcs_offset = btf.as_ref().and_then(|b| b.field("tracepoint", "funcs"));
+
     let release = boot.release();
     match release.as_deref() {
         Some(release) => {
@@ -577,9 +581,15 @@ fn run(cli: &Cli) -> Result<i32> {
             None => {
                 let paths =
                     analysis::probe_paths(&symbols, &boot.kernel, &rel_symbols, &sorted_offsets);
-                let pselect_derived = derived.contains_key("pselect_waiter_shift_value");
+                let pselect_verdict = if derived.contains_key("pselect_waiter_shift_value") {
+                    analysis::PselectVerdict::Derived
+                } else if pselect_infeasible.is_some() {
+                    analysis::PselectVerdict::Infeasible
+                } else {
+                    analysis::PselectVerdict::Unknown
+                };
                 let (suggested, _, _) =
-                    analysis::suggest_route(pselect_derived, &paths, release.as_deref());
+                    analysis::suggest_route(pselect_verdict, &paths, release.as_deref());
                 suggested.map(str::to_string)
             }
         };
@@ -695,6 +705,7 @@ fn run(cli: &Cli) -> Result<i32> {
             route_geometry: &geometry,
             cred: &cred,
             extra_offsets: &extra_offsets,
+            vr_funcs_offset: vr_funcs_offset,
         })
     } else {
         let report_value = report::build_report(

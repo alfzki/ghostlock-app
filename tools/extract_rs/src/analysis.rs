@@ -177,10 +177,22 @@ pub fn probe_paths(
     paths
 }
 
+/// What the pselect derivation established. `Infeasible` is the only state that
+/// proves `select_stack` cannot work here; `Unknown` covers both a failed
+/// analysis and a `--no-disasm` run, where the route may still be fine and we
+/// simply do not know. Keeping them apart stops a route recommendation from
+/// being drawn off an inconclusive measurement.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PselectVerdict {
+    Derived,
+    Infeasible,
+    Unknown,
+}
+
 /// The route a profile should select from kernel evidence alone. Shared by the
 /// `--analysis` report and the `--format conf` default, so both agree.
 pub fn suggest_route(
-    pselect_derived: bool,
+    pselect: PselectVerdict,
     paths: &[PathCandidate],
     release: Option<&str>,
 ) -> (Option<&'static str>, Confidence, Vec<String>) {
@@ -191,7 +203,7 @@ pub fn suggest_route(
             .iter()
             .any(|path| path.route == route && path.available)
     };
-    suggest(pselect_derived, &available, family, major, minor)
+    suggest(pselect, &available, family, major, minor)
 }
 
 pub fn build(input: Input<'_>) -> Analysis {
@@ -243,9 +255,13 @@ pub fn build(input: Input<'_>) -> Analysis {
         input.rel_symbols,
         input.sorted_offsets,
     );
-    let pselect_derived = matches!(pselect, PselectOutcome::Derived(_));
+    let pselect_verdict = match &pselect {
+        PselectOutcome::Derived(_) => PselectVerdict::Derived,
+        PselectOutcome::Infeasible(_) => PselectVerdict::Infeasible,
+        _ => PselectVerdict::Unknown,
+    };
     let (suggestion, suggestion_confidence, suggestion_reasons) =
-        suggest_route(pselect_derived, &paths, input.release);
+        suggest_route(pselect_verdict, &paths, input.release);
 
     Analysis {
         release: input.release.map(str::to_string),
@@ -268,14 +284,14 @@ pub fn build(input: Input<'_>) -> Analysis {
 }
 
 fn suggest(
-    pselect_derived: bool,
+    pselect: PselectVerdict,
     available: &dyn Fn(&str) -> bool,
     family: Option<&'static str>,
     major: Option<u32>,
     minor: Option<u32>,
 ) -> (Option<&'static str>, Confidence, Vec<String>) {
     let mut reasons = Vec::new();
-    if pselect_derived {
+    if pselect == PselectVerdict::Derived {
         reasons.push("pselect/futex waiter layout derived from the kernel".to_string());
         return (Some("select_stack"), Confidence::High, reasons);
     }
@@ -286,6 +302,14 @@ fn suggest(
     }
     if major == Some(6) && minor == Some(1) && available("tcp_zerocopy") {
         reasons.push("android14-6.1 compact-waiter family with the tcp path present".to_string());
+        return (Some("tcp_zerocopy"), Confidence::Medium, reasons);
+    }
+    if pselect == PselectVerdict::Infeasible && major == Some(6) && available("tcp_zerocopy") {
+        reasons.push(
+            "pselect waiter does not fit the kernel's stack fd_set window on this image; \
+             tcp path present"
+                .to_string(),
+        );
         return (Some("tcp_zerocopy"), Confidence::Medium, reasons);
     }
     match family {
@@ -451,7 +475,8 @@ mod tests {
 
     #[test]
     fn pselect_derivation_wins() {
-        let (route, confidence, _) = suggest(true, &no_routes, None, Some(5), Some(15));
+        let (route, confidence, _) =
+            suggest(PselectVerdict::Derived, &no_routes, None, Some(5), Some(15));
         assert_eq!(route, Some("select_stack"));
         assert_eq!(confidence, Confidence::High);
     }
@@ -459,7 +484,8 @@ mod tests {
     #[test]
     fn major5_multicast_fallback() {
         let available = |route: &str| route == "multicast_waiter";
-        let (route, confidence, _) = suggest(false, &available, None, Some(5), Some(15));
+        let (route, confidence, _) =
+            suggest(PselectVerdict::Unknown, &available, None, Some(5), Some(15));
         assert_eq!(route, Some("multicast_waiter"));
         assert_eq!(confidence, Confidence::Medium);
     }
@@ -468,7 +494,7 @@ mod tests {
     fn android14_61_prefers_tcp_when_pselect_is_not_derived() {
         let available = |route: &str| route == "tcp_zerocopy";
         let (route, confidence, _) = suggest(
-            false,
+            PselectVerdict::Unknown,
             &available,
             Some("STRUCT_OFFSETS_6_1"),
             Some(6),
@@ -481,7 +507,7 @@ mod tests {
     #[test]
     fn family_defaults_are_low_confidence() {
         let (route, confidence, _) = suggest(
-            false,
+            PselectVerdict::Unknown,
             &no_routes,
             Some("STRUCT_OFFSETS_6_6"),
             Some(6),
@@ -489,14 +515,15 @@ mod tests {
         );
         assert_eq!(route, Some("select_stack"));
         assert_eq!(confidence, Confidence::Low);
-        let (route, _, _) = suggest(false, &no_routes, None, Some(5), Some(15));
+        let (route, _, _) = suggest(PselectVerdict::Unknown, &no_routes, None, Some(5), Some(15));
         assert_eq!(route, None);
     }
 
     #[test]
     fn unverified_six_x_template_does_not_drive_route_suggestion() {
         let paths = Vec::new();
-        let (route, confidence, _) = suggest_route(false, &paths, Some("6.6.92-generic-build"));
+        let (route, confidence, _) =
+            suggest_route(PselectVerdict::Unknown, &paths, Some("6.6.92-generic-build"));
         assert_eq!(route, None);
         assert_eq!(confidence, Confidence::Low);
     }
@@ -506,5 +533,60 @@ mod tests {
         assert!(route_depends_on_pselect_layout("select_stack"));
         assert!(!route_depends_on_pselect_layout("tcp_zerocopy"));
         assert!(!route_depends_on_pselect_layout("multicast_waiter"));
+    }
+
+    #[test]
+    fn six_twelve_infeasible_pselect_falls_back_to_tcp() {
+        let available = |route: &str| route == "tcp_zerocopy";
+        let (route, confidence, _) = suggest(
+            PselectVerdict::Infeasible,
+            &available,
+            Some("STRUCT_OFFSETS_6_12"),
+            Some(6),
+            Some(12),
+        );
+        assert_eq!(route, Some("tcp_zerocopy"));
+        assert_eq!(confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn unknown_pselect_never_implies_infeasible_on_six_twelve() {
+        let available = |route: &str| route == "tcp_zerocopy";
+        for verdict in [PselectVerdict::Unknown] {
+            let (route, confidence, _) = suggest(
+                verdict,
+                &available,
+                Some("STRUCT_OFFSETS_6_12"),
+                Some(6),
+                Some(12),
+            );
+            assert_eq!(
+                route,
+                Some("select_stack"),
+                "an inconclusive pselect analysis must not be read as infeasible"
+            );
+            assert_eq!(confidence, Confidence::Low);
+        }
+    }
+
+    #[test]
+    fn derived_pselect_still_wins_on_six_twelve_even_with_tcp() {
+        let available = |route: &str| route == "tcp_zerocopy";
+        let (route, confidence, _) = suggest(
+            PselectVerdict::Derived,
+            &available,
+            Some("STRUCT_OFFSETS_6_12"),
+            Some(6),
+            Some(12),
+        );
+        assert_eq!(route, Some("select_stack"));
+        assert_eq!(confidence, Confidence::High);
+    }
+
+    #[test]
+    fn infeasible_pselect_on_five_x_still_prefers_multicast() {
+        let available = |route: &str| route == "multicast_waiter" || route == "tcp_zerocopy";
+        let (route, _, _) = suggest(PselectVerdict::Infeasible, &available, None, Some(5), Some(15));
+        assert_eq!(route, Some("multicast_waiter"));
     }
 }
