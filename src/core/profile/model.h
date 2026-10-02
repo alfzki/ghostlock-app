@@ -108,6 +108,33 @@ namespace ghostlock::profile {
         uint64_t slide_nfulnl_logger = 0, slide_loggers_0_1 = 0, slide_boot_id = 0, off_vr_sys_exit_tp = 0;
     };
 
+    /* vivo vr.ko anti-root guard (AncillaryKind::VrGuard). The gate says the
+     * support list enables the behavior for this profile; the layout carries the
+     * behavior's own parameters. The kernel symbol offset stays in the shared
+     * `offset` section (`off_vr_sys_exit_tp`) because it is a plain symbol
+     * offset, not a behavior parameter.
+     *
+     * Deliberately NOT a member of kernel_offsets: that struct is embedded in
+     * TargetProfile, which is embedded in ExploitSession, whose layout is fixed
+     * so attack-function stack offsets do not move (same reason
+     * binary_profile::component_ids is kept out). Every field is optional, so a
+     * profile that does not configure the behavior omits the section and its
+     * wire bytes stay identical. */
+    struct vr_guard_layout {
+        std::optional<uint8_t> enabled;
+        /* offsetof(struct tracepoint, funcs) for the running KMI. */
+        std::optional<uint32_t> funcs_offset;
+        /* Offset of vr tag B in task_struct (tag A and the syscall-tracepoint
+         * bit live inside the thread_info flags word, so they need no field). */
+        std::optional<uint32_t> tag_b_off;
+    };
+
+    /* Decoded once at startup next to the profile, then read-only for the rest of
+     * the process (the same category as kernel::g_direct_map_end). Written only
+     * by main() from the decode side output; the vr.ko behavior is its only
+     * reader. */
+    extern vr_guard_layout g_vr_guard_layout;
+
     struct KernelMisc {
         std::optional<uint64_t> kernel_phys_load;
         /* DRAM base (linear-map PHYS_OFFSET) used for image->direct-map
@@ -223,6 +250,10 @@ namespace ghostlock::profile {
 
         [[nodiscard]] const struct execution_settings *execution() const noexcept {
             return loaded_ ? &values_.execution : nullptr;
+        }
+
+        [[nodiscard]] uint64_t off_vr_sys_exit_tp() const noexcept {
+            return loaded_ ? values_.offsets.off_vr_sys_exit_tp : 0;
         }
 
         /* Typed execution-config getters. Every execution field is an unsigned

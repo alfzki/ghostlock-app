@@ -223,14 +223,40 @@ addresses.
 | `kernel_phys_offset` | DRAM base / linear-map `PHYS_OFFSET` used for image→direct-map translation (default: compiled `P0_PHYS_OFFSET = 0x80000000`). Set it for devices whose DRAM base differs (e.g. MTK `0x40000000`); not derivable from `boot.img`, take it from `/proc/iomem` |
 | `recommend_shizuku` | Whether this kernel recommends the Shizuku path (0/1, required in every profile, default 0; advisory only). It is not shown in any editor: for recommended kernels the app **turns the home-screen "Run via Shizuku" switch on at every start**. You can turn it off for the session, and once off the app stops requiring Shizuku for that session |
 
-### 4.4 select_stack / tcp route fields
+### 4.4 vivo vr.ko ancillary guard (`vr_guard`)
+
+This section is **optional** and only present on vivo/iQOO kernels that carry the `vr.ko` anti-root module. When all three fields are absent, the section is omitted from the wire entirely, keeping non-vivo profiles byte-identical.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `vr_guard.enabled` | u8 (0/1) | Support-list gate for the vr.ko ancillary behavior; 0 or omitted = off |
+| `vr_guard.funcs_offset` | u32 | `offsetof(struct tracepoint, funcs)` for this kernel's KMI (e.g., `0x40` on 6.1, `0x48` on 6.6+) |
+| `vr_guard.tag_b_off` | u32 | vivo vr.ko tag B offset in `task_struct` |
+
+The section is written in HOCON as:
+```hocon
+vr_guard {
+  enabled = 1
+  funcs_offset = 64
+  tag_b_off = 44
+}
+```
+
+> **Write these values in decimal, not hex.** The resolver reads every field as a
+> number (`getLongAt`), and a hex literal such as `0x40` does not survive parsing as
+> one: the field resolves to "absent" and is silently dropped from the wire, which
+> disables the behavior with no error. `0x40` is `64`, `0x2c` is `44`. This matches the
+> rest of the profile files, which are decimal throughout. The hex forms in the tables
+> above describe the *value*, not the syntax to write.
+
+### 4.5 select_stack / tcp route fields
 
 | Field | Meaning |
 |---|---|
 | `route.select_stack.waiter_shift` | Relative shift of the select-route waiter on the stack (0 is valid); under a fallback declaration this is `fallback.route.select_stack.waiter_shift` |
 | `route.tcp_zerocopy.compact_waiter` | Compact-waiter layout flag for the tcp route; the multicast branch needs it too (`route.multicast_waiter.compact_waiter`) |
 
-### 4.5 multicast_waiter route fields (`route.multicast_waiter`)
+### 4.6 multicast_waiter route fields (`route.multicast_waiter`)
 
 | Field | Meaning |
 |---|---|
@@ -239,7 +265,7 @@ addresses.
 | `route.multicast_waiter.task_offset` / `route.multicast_waiter.lock_offset` | Task / lock field offsets in the buffer |
 | `offset.empty_zero_page` | `empty_zero_page` offset |
 
-### 4.6 KernelSnitch values (`kernelsnitch`)
+### 4.7 KernelSnitch values (`kernelsnitch`)
 
 Shared by every route (KernelSnitch drives the `mm_struct` leak search), not
 affected by route choice:

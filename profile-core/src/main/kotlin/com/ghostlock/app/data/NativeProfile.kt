@@ -34,6 +34,8 @@ data class NativeProfileDocument(
     val safeMode: UInt,
     /** Route-specific configuration; never part of the shared schema. */
     val routeConfig: RouteConfig,
+    /** vivo vr.ko ancillary guard; omitted when all fields are null. */
+    val vrGuard: VrGuardConfig = VrGuardConfig(),
 ) {
     fun toBinary(): ByteArray {
         val releaseBytes = release.toByteArray(Charsets.UTF_8)
@@ -87,6 +89,7 @@ data class NativeProfileDocument(
         add(Section("cred", credEntries()))
         add(Section("offset", offsetEntries()))
         kernelSection()?.let(::add)
+        vrGuardSection()?.let(::add)
         add(
             Section(
                 "execution.recommended_cpus",
@@ -216,6 +219,11 @@ data class NativeProfileDocument(
             mmStructSz?.let { add("mm_struct_sz" to it.toULong()) }
         }
         return if (entries.isEmpty()) null else Section("kernel", entries)
+    }
+
+    private fun vrGuardSection(): Section? {
+        val entries = vrGuard.entries()
+        return if (entries.isEmpty()) null else Section("vr_guard", entries)
     }
 
     private fun routeSection(): Section? {
@@ -409,6 +417,11 @@ data class NativeProfileDocument(
                 compactWaiter = vbOrNull("compact_waiter"),
                 kernelsnitchCollisions = vuOrNull("kernelsnitch.collisions"),
                 mmStructSz = vuOrNull("kernelsnitch.mm_struct_sz"),
+                vrGuard = VrGuardConfig(
+                    enabled = vbOrNull("vr_guard.enabled"),
+                    funcsOffset = vuOrNull("vr_guard.funcs_offset"),
+                    tagBOff = vuOrNull("vr_guard.tag_b_off"),
+                ),
                 execution = ExecutionTuning(
                     recommendedMainCpu = vu("execution.recommended_cpus.main"),
                     recommendedConsumerCpu = vu("execution.recommended_cpus.consumer"),
@@ -457,6 +470,7 @@ data class NativeProfileDocument(
             private var compactWaiter: UByte? = null
             private var kernelsnitchCollisions: UInt? = null
             private var mmStructSz: UInt? = null
+            private var vrGuard = VrGuardConfig()
             private var execution = ExecutionTuning()
             private var routeConfig: RouteConfig = routeKind.emptyConfig()
 
@@ -532,6 +546,13 @@ data class NativeProfileDocument(
                         "compact_waiter" -> compactWaiter = raw.toUByte()
                         "kernelsnitch_collisions" -> kernelsnitchCollisions = raw.toUInt()
                         "mm_struct_sz" -> mmStructSz = raw.toUInt()
+                    }
+
+                    "vr_guard" -> vrGuard = when (key) {
+                        "enabled" -> vrGuard.copy(enabled = raw.toUByte())
+                        "funcs_offset" -> vrGuard.copy(funcsOffset = raw.toUInt())
+                        "tag_b_off" -> vrGuard.copy(tagBOff = raw.toUInt())
+                        else -> vrGuard
                     }
 
                     "execution.recommended_cpus" -> execution = when (key) {
@@ -618,6 +639,7 @@ data class NativeProfileDocument(
                 compactWaiter = compactWaiter,
                 kernelsnitchCollisions = kernelsnitchCollisions,
                 mmStructSz = mmStructSz,
+                vrGuard = vrGuard,
                 execution = execution,
                 safeMode = metaSafeMode,
                 routeConfig = routeConfig,
@@ -684,6 +706,19 @@ data class KernelOffsetTable(
     val slideBootId: ULong = 0uL,
     val off_vr_sys_exit_tp: ULong = 0uL
 )
+
+data class VrGuardConfig(
+    val enabled: UByte? = null,
+    val funcsOffset: UInt? = null,
+    val tagBOff: UInt? = null,
+) {
+    /** Emits present fields only; returns empty list when all fields are null. */
+    fun entries(): List<Pair<String, ULong>> = buildList {
+        enabled?.let { add("enabled" to it.toULong()) }
+        funcsOffset?.let { add("funcs_offset" to it.toULong()) }
+        tagBOff?.let { add("tag_b_off" to it.toULong()) }
+    }
+}
 
 data class ExecutionTuning(
     val recommendedMainCpu: UInt = 0u,

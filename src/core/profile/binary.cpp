@@ -195,6 +195,48 @@ namespace ghostlock::binary_profile {
             size_t count;
         };
 
+        /* Sections decoded into a side output instead of kernel_offsets. Same
+         * presence semantics and the same u64 bit container; only the storage
+         * differs, because these values must not move the ExploitSession layout
+         * (see profile::vr_guard_layout). */
+        struct SideField {
+            std::string_view key;
+            bool (*has)(const profile::vr_guard_layout &);
+            uint64_t (*load)(const profile::vr_guard_layout &);
+            void (*store)(profile::vr_guard_layout &, uint64_t);
+        };
+
+#define SIDE_OPT(key, member)                                                    \
+    {                                                                            \
+        key, [](const profile::vr_guard_layout &o) {                            \
+            return o.member.has_value();                                         \
+        },                                                                       \
+                [](const profile::vr_guard_layout &o) {                          \
+                    return o.member ? to_raw(*o.member) : uint64_t{0};          \
+                },                                                               \
+                [](profile::vr_guard_layout &o, uint64_t r) {                    \
+                    o.member = from_raw<                                          \
+                        std::remove_reference_t<decltype(*o.member)>>(r);        \
+                }                                                                \
+    }
+
+        constexpr SideField kVrGuard[] = {
+            SIDE_OPT("enabled", enabled),
+            SIDE_OPT("funcs_offset", funcs_offset),
+            SIDE_OPT("tag_b_off", tag_b_off),
+        };
+#undef SIDE_OPT
+
+        struct SideSection {
+            std::string_view name;
+            const SideField *fields;
+            size_t count;
+        };
+
+        /* Emitted right after `kernel`, which is where Kotlin writes it. */
+        constexpr SideSection kVrGuardSection{"vr_guard", kVrGuard,
+                                               std::size(kVrGuard)};
+
         constexpr Section kSections[] = {
             {"meta", kMeta, std::size(kMeta)},
             {"task_struct", kTask, std::size(kTask)},
@@ -252,9 +294,47 @@ namespace ghostlock::binary_profile {
             return n;
         }
 
+        size_t vr_present_count(const profile::vr_guard_layout &vr) {
+            size_t n = 0;
+            for (size_t i = 0; i < kVrGuardSection.count; i++) {
+                if (kVrGuardSection.fields[i].has(vr)) n++;
+            }
+            return n;
+        }
+
+        size_t section_bytes(const SideSection &section,
+                             const profile::vr_guard_layout &vr) {
+            size_t total = 1 + section.name.size() + 4;
+            for (size_t i = 0; i < section.count; i++) {
+                if (section.fields[i].has(vr)) {
+                    total += 1 + section.fields[i].key.size() + 8;
+                }
+            }
+            return total;
+        }
+
+        uint8_t *write_side_section(uint8_t *p, const SideSection &section,
+                                    const profile::vr_guard_layout &vr) {
+            *p++ = static_cast<uint8_t>(section.name.size());
+            memcpy(p, section.name.data(), section.name.size());
+            p += section.name.size();
+            write_le(p, vr_present_count(vr), 4);
+            p += 4;
+            for (size_t i = 0; i < section.count; i++) {
+                const SideField &field = section.fields[i];
+                if (!field.has(vr)) continue;
+                *p++ = static_cast<uint8_t>(field.key.size());
+                memcpy(p, field.key.data(), field.key.size());
+                p += field.key.size();
+                write_le(p, field.load(vr), 8);
+                p += 8;
+            }
+            return p;
+        }
+
         int32_t parse_v2(std::string_view document, profile::kernel_offsets *out,
                          char *release_buf, size_t release_buf_cap,
-                         component_ids *ids) {
+                         component_ids *ids, profile::vr_guard_layout *vr) {
             const auto *bytes = reinterpret_cast<const uint8_t *>(document.data());
             const auto *end = bytes + document.size();
             if (document.size() < kHeaderSize) return -1;
@@ -272,6 +352,9 @@ namespace ghostlock::binary_profile {
             release_buf[release_length] = '\0';
 
             *out = profile::kernel_offsets{};
+            /* Reset before decoding, so a document without the section leaves the
+             * side output empty instead of stale. */
+            if (vr) *vr = profile::vr_guard_layout{};
             out->uname_r = release_buf;
             out->route = static_cast<uint8_t>(middleware & 0xff);
             /* The route is profile-controlled: an unresolved or unknown route
@@ -296,10 +379,13 @@ namespace ghostlock::binary_profile {
                 const size_t entries = static_cast<size_t>(read_le(p, 4));
                 p += 4;
                 const Section *section = nullptr;
-                /* A route section only applies to the document's own route;
-                 * other-route sections are ignored (never silently merged). */
-                if (!name.starts_with("route.") ||
-                    name == route_section_name(out->route)) {
+                const SideSection *side = nullptr;
+                if (name == kVrGuardSection.name) {
+                    side = &kVrGuardSection;
+                } else if (!name.starts_with("route.") ||
+                           name == route_section_name(out->route)) {
+                    /* A route section only applies to the document's own route;
+                     * other-route sections are ignored (never silently merged). */
                     for (const Section &candidate: kSections) {
                         if (candidate.name == name) {
                             section = &candidate;
@@ -315,6 +401,19 @@ namespace ghostlock::binary_profile {
                                                key_len);
                     const uint64_t raw = read_le(p + key_len, 8);
                     p += key_len + 8;
+                    /* A side section with no side output is consumed and dropped,
+                     * exactly like a section this build does not know. */
+                    if (side) {
+                        if (vr) {
+                            for (size_t i = 0; i < side->count; i++) {
+                                if (side->fields[i].key == key) {
+                                    side->fields[i].store(*vr, raw);
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if (!section) continue;
                     for (size_t i = 0; i < section->count; i++) {
                         if (section->fields[i].key == key) {
@@ -330,20 +429,29 @@ namespace ghostlock::binary_profile {
     } // namespace
 
     int32_t parse(std::string_view document, profile::kernel_offsets *out,
-                  char *release_buf, size_t release_buf_cap, component_ids *ids) {
+                  char *release_buf, size_t release_buf_cap, component_ids *ids,
+                  profile::vr_guard_layout *vr) {
         if (!out || !release_buf || document.size() < kHeaderSize) return -1;
-        return parse_v2(document, out, release_buf, release_buf_cap, ids);
+        return parse_v2(document, out, release_buf, release_buf_cap, ids, vr);
     }
 
     int32_t serialize(const profile::kernel_offsets *in, char *buffer,
-                      size_t capacity) {
+                      size_t capacity, const profile::vr_guard_layout *vr) {
         if (!in || !buffer || !in->uname_r) return -1;
         if (in->route == profile::kRouteAuto) return -1;
         const size_t release_length = strlen(in->uname_r);
         if (release_length > 0xffff) return -1;
 
-        /* Sections with at least one present field, and their byte cost. */
-        const Section *emitted[std::size(kSections)];
+        /* The emitted order, mixing both storage kinds: kernel_offsets-backed
+         * sections and the side sections, with `vr_guard` right after `kernel`
+         * because that is where the Kotlin writer puts it. */
+        struct Emitted {
+            const Section *main;
+            const SideSection *side;
+        };
+        static constexpr profile::vr_guard_layout kNoVrGuard{};
+        const profile::vr_guard_layout &vr_in = vr ? *vr : kNoVrGuard;
+        Emitted emitted[std::size(kSections) + 1];
         size_t emitted_count = 0;
         size_t total = kHeaderSize + release_length + 2;
         for (const Section &section: kSections) {
@@ -352,14 +460,41 @@ namespace ghostlock::binary_profile {
                 section.name != route_section_name(in->route)) {
                 continue;
             }
-            const size_t n = present_count(section, *in);
-            if (n == 0) continue;
-            emitted[emitted_count++] = &section;
+            if (present_count(section, *in) == 0) continue;
+            emitted[emitted_count++] = Emitted{&section, nullptr};
             total += 1 + section.name.size() + 4;
             for (size_t i = 0; i < section.count; i++) {
                 if (!section.fields[i].has(*in)) continue;
                 total += 1 + section.fields[i].key.size() + 8;
             }
+        }
+        /* `vr_guard` belongs right after `kernel`, where the Kotlin writer puts
+         * it. `kernel` is itself omitted when it has no present field, so fall
+         * back to just before the execution block and finally to the end; parse
+         * is order-independent, this only keeps the bytes predictable. */
+        if (vr_present_count(vr_in) > 0) {
+            size_t at = emitted_count;
+            for (size_t s = 0; s < emitted_count; s++) {
+                if (emitted[s].main && emitted[s].main->name == "kernel") {
+                    at = s + 1;
+                    break;
+                }
+            }
+            if (at == emitted_count) {
+                for (size_t s = 0; s < emitted_count; s++) {
+                    if (emitted[s].main &&
+                        emitted[s].main->name.starts_with("execution.")) {
+                        at = s;
+                        break;
+                    }
+                }
+            }
+            for (size_t s = emitted_count; s > at; s--) {
+                emitted[s] = emitted[s - 1];
+            }
+            emitted[at] = Emitted{nullptr, &kVrGuardSection};
+            emitted_count++;
+            total += section_bytes(kVrGuardSection, vr_in);
         }
         if (total > capacity) return -1;
 
@@ -377,7 +512,11 @@ namespace ghostlock::binary_profile {
         write_le(p, emitted_count, 2);
         p += 2;
         for (size_t s = 0; s < emitted_count; s++) {
-            const Section &section = *emitted[s];
+            if (emitted[s].side) {
+                p = write_side_section(p, *emitted[s].side, vr_in);
+                continue;
+            }
+            const Section &section = *emitted[s].main;
             *p++ = static_cast<uint8_t>(section.name.size());
             memcpy(p, section.name.data(), section.name.size());
             p += section.name.size();

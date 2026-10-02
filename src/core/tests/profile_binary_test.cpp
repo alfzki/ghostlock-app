@@ -302,6 +302,62 @@ int32_t main(void) {
         assert(binary_profile::serialize(&values, buffer, sizeof(buffer)) == -1);
     }
 
+    /* ---- The vr_guard side output: presence, order and round trip. ---- */
+    {
+        /* Offsets into kernel_offsets must not move when the section is used:
+         * that is why this data is decoded into a side output. */
+        profile::kernel_offsets base = {};
+        base.uname_r = "vr-guard";
+        base.route = ghostlock::profile::kRouteSelectStack;
+        char buf[8192];
+        const int32_t base_size =
+                binary_profile::serialize(&base, buf, sizeof(buf));
+        assert(base_size > 0);
+
+        ghostlock::profile::vr_guard_layout vr{};
+        vr.enabled = 1;
+        vr.funcs_offset = 0x40;
+        vr.tag_b_off = 0x2c;
+        char vrbuf[8192];
+        const int32_t vrsize =
+                binary_profile::serialize(&base, vrbuf, sizeof(vrbuf), &vr);
+        assert(vrsize > base_size);
+        /* Only the section itself is added: name-length byte, name, entry count,
+         * then one length-prefixed u64 per present field. */
+        const size_t expected = static_cast<size_t>(base_size) + 1 +
+                                strlen("vr_guard") + 4 +
+                                (1 + strlen("enabled") + 8) +
+                                (1 + strlen("funcs_offset") + 8) +
+                                (1 + strlen("tag_b_off") + 8);
+        assert(static_cast<size_t>(vrsize) == expected);
+
+        ghostlock::profile::vr_guard_layout decoded{};
+        assert(binary_profile::parse(std::string_view(vrbuf, static_cast<size_t>(vrsize)),
+                                     &parsed, release, sizeof(release), nullptr,
+                                     &decoded) == 0);
+        assert(decoded.enabled.value_or(0) == 1);
+        assert(decoded.funcs_offset.value_or(0) == 0x40);
+        assert(decoded.tag_b_off.value_or(0) == 0x2c);
+
+        /* A document without the section leaves the side output empty (the
+         * gate then fails closed), and asking for no side output is allowed. */
+        ghostlock::profile::vr_guard_layout absent{};
+        assert(binary_profile::parse(
+                       std::string_view(buf, static_cast<size_t>(base_size)),
+                       &parsed, release, sizeof(release), nullptr, &absent) == 0);
+        assert(!absent.enabled.has_value());
+        assert(!absent.funcs_offset.has_value());
+        assert(!absent.tag_b_off.has_value());
+
+        /* An unknown/absent side output must not leak a stale value. */
+        ghostlock::profile::vr_guard_layout stale{};
+        stale.enabled = 9;
+        assert(binary_profile::parse(
+                       std::string_view(buf, static_cast<size_t>(base_size)),
+                       &parsed, release, sizeof(release), nullptr, &stale) == 0);
+        assert(!stale.enabled.has_value());
+    }
+
     puts("profile_binary_test: ok");
     return 0;
 }

@@ -83,9 +83,6 @@ namespace ghostlock::kernel {
     inline constexpr int32_t FAKE_WAITER_LOCK_OFF = 0x58;
     inline constexpr int32_t FAKE_WAITER_WAKE_STATE_OFF = 0x60;
     inline constexpr int32_t FAKE_WAITER_WW_CTX_OFF = 0x68;
-   /* Tracepoint offsets. */
-    inline constexpr int32_t TRACEPOINT_FUNCS_OFF_6_1 = 0x40;
-    inline constexpr int32_t TRACEPOINT_FUNCS_OFF_6_6 = 0x48;
 
     inline constexpr int32_t FAKE_TASK_USAGE_OFF = 0x40;
     inline constexpr int32_t FAKE_TASK_PRIO_OFF = 0x84;

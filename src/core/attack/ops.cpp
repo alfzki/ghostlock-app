@@ -20,6 +20,12 @@
 #include <sys/mman.h>
 #include <sys/utsname.h>
 
+namespace ghostlock::profile {
+    /* Profile-derived and read-only after startup; main() fills it from the
+     * decode side output. See profile::vr_guard_layout. */
+    vr_guard_layout g_vr_guard_layout{};
+} // namespace ghostlock::profile
+
 namespace ghostlock::attack {
     void log_execution_settings(const profile::kernel_offsets *profile) {
         if (!profile) return;

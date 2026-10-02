@@ -5,6 +5,14 @@
 
 #include "kernel/offset.h"
 
+/* Bionic's <bits/page_size.h> defines PAGE_SIZE as an object-like macro, so a
+ * translation unit that pulls in a system header before common.h reaches this
+ * file would macro-expand the constant below into `unsigned long 4096`. Drop
+ * the macro first; the namespaced constants are the only authority here. */
+#ifdef PAGE_SIZE
+#undef PAGE_SIZE
+#endif
+
 namespace ghostlock::kernel {
     inline constexpr unsigned PAGE_SHIFT = 12;
     inline constexpr unsigned long PAGE_SIZE = 1UL << PAGE_SHIFT;

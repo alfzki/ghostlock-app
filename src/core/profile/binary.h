@@ -55,12 +55,18 @@ namespace ghostlock::binary_profile {
     };
 
     /* Parse one binary document into the native transport struct. `ids`, when
-     * given, receives the decoded component selection. */
+     * given, receives the decoded component selection. `vr`, when given,
+     * receives the decoded `vr_guard` section; like `ids` it is a side output,
+     * because both must stay out of kernel_offsets so the ExploitSession layout
+     * (and therefore attack codegen) does not move. */
     int32_t parse(std::string_view document, struct ghostlock::profile::kernel_offsets *out,
-              char *release_buf, size_t release_buf_cap, component_ids *ids = nullptr);
+              char *release_buf, size_t release_buf_cap, component_ids *ids = nullptr,
+              struct ghostlock::profile::vr_guard_layout *vr = nullptr);
 
-    /* Serialize the same layout (host tests and tooling). */
-    int32_t serialize(const struct ghostlock::profile::kernel_offsets *in, char *buffer, size_t capacity);
+    /* Serialize the same layout (host tests and tooling). `vr` is written as a
+     * `vr_guard` section right after `kernel`, matching the Kotlin writer. */
+    int32_t serialize(const struct ghostlock::profile::kernel_offsets *in, char *buffer, size_t capacity,
+                      const struct ghostlock::profile::vr_guard_layout *vr = nullptr);
 } // namespace ghostlock::binary_profile
 
 #endif

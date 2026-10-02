@@ -12,6 +12,7 @@
 
 #include "common.h"
 
+#include "attack/ops.hpp"
 #include "profile/entry.h"
 #include "support/fatal_error.hpp"
 #include "support/run_state.hpp"
@@ -34,6 +35,9 @@ int main(int argc, char **argv) {
             static_cast<uint16_t>(runtime::BackendKind::Cve2026_43499),
             0,
         };
+        /* Side outputs of the profile decode. Both stay out of kernel_offsets so
+         * the ExploitSession layout (and attack codegen) does not move. */
+        profile::vr_guard_layout vr_guard{};
 
         bool app_call = false;
         bool force_attack = false;
@@ -69,13 +73,16 @@ int main(int argc, char **argv) {
 
         int32_t loaded;
         if (prebuilt_path != nullptr) {
-            loaded = profile_entry::read_glk1_file(prebuilt_path, &decoded, release_buf.data(), release_buf.size(), &ids);
+            loaded = profile_entry::read_glk1_file(prebuilt_path, &decoded, release_buf.data(), release_buf.size(),
+                                            &ids, &vr_guard);
         } else if (app_call) {
             loaded = status_record
                          ? profile_entry::read_glk1_frame_stdin(
-                               &decoded, release_buf.data(), release_buf.size(), &ids)
+                               &decoded, release_buf.data(), release_buf.size(),
+                               &ids, &vr_guard)
                          : profile_entry::read_glk1_stdin(
-                               &decoded, release_buf.data(), release_buf.size(), &ids);
+                               &decoded, release_buf.data(), release_buf.size(),
+                               &ids, &vr_guard);
         } else {
             pr_error("no entrypoint: pass --ghostlock-app-call or --load-prebuilt-profile <bin>\n");
             return 1;
@@ -84,6 +91,10 @@ int main(int argc, char **argv) {
             pr_error("cannot load profile\n");
             throw FatalError{};
         }
+
+        /* Publish the decoded vr.ko layout once, here at startup; from here on it
+         * is read-only. The vr.ko behavior is the only reader. */
+        profile::g_vr_guard_layout = vr_guard;
 
         auto &session = session::g_exploit_session;
         /* The component selection comes from the wire; the route field is the
