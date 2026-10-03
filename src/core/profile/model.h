@@ -149,10 +149,14 @@ namespace ghostlock::profile {
         std::optional<uint8_t> compact_waiter;
         std::optional<uint32_t> kernelsnitch_collisions;
         std::optional<uint32_t> mm_struct_sz;
-        // fd_graph route geometry (from preload.so .rodata strings)
+        // fd_graph route geometry (from BTF: struct eventpoll / epitem)
         std::optional<uint32_t> eventpoll_size;
         std::optional<uint32_t> epitem_ep;
         std::optional<uint32_t> epitem_fllink;
+        std::optional<uint32_t> epitem_gen;
+        std::optional<uint32_t> epitem_refs;
+        std::optional<uint32_t> epitem_depth;
+        std::optional<uint32_t> epitem_refcount;
         std::optional<uint32_t> pipe_buffer;
         std::optional<uint32_t> pipe_flags;
         std::optional<uint32_t> pipe_slots;
@@ -208,6 +212,10 @@ namespace ghostlock::profile {
         std::optional<uint32_t> eventpoll_size;
         std::optional<uint32_t> epitem_ep;
         std::optional<uint32_t> epitem_fllink;
+        std::optional<uint32_t> epitem_gen;
+        std::optional<uint32_t> epitem_refs;
+        std::optional<uint32_t> epitem_depth;
+        std::optional<uint32_t> epitem_refcount;
         std::optional<uint32_t> pipe_buffer;
         std::optional<uint32_t> pipe_flags;
         std::optional<uint32_t> pipe_slots;
@@ -367,6 +375,10 @@ namespace ghostlock::profile {
                            .eventpoll_size = values_.misc.eventpoll_size,
                            .epitem_ep = values_.misc.epitem_ep,
                            .epitem_fllink = values_.misc.epitem_fllink,
+                           .epitem_gen = values_.misc.epitem_gen,
+                           .epitem_refs = values_.misc.epitem_refs,
+                           .epitem_depth = values_.misc.epitem_depth,
+                           .epitem_refcount = values_.misc.epitem_refcount,
                            .pipe_buffer = values_.misc.pipe_buffer,
                            .pipe_flags = values_.misc.pipe_flags,
                            .pipe_slots = values_.misc.pipe_slots,

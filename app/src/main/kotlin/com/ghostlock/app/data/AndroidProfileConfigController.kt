@@ -918,6 +918,7 @@ internal class AndroidProfileConfigController(
         )
         private val RouteFdGraphFields = listOf(
             "eventpoll_size", "epitem_ep", "epitem_fllink",
+            "epitem_gen", "epitem_refs", "epitem_depth", "epitem_refcount",
             "pipe_buffer", "pipe_flags", "pipe_slots", "pipe_ring",
             "pipe_object", "graph_width", "graph_fanout", "graph_edges",
             "objects_per_order3",

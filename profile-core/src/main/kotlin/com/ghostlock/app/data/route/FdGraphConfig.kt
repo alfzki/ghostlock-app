@@ -8,6 +8,10 @@ data class FdGraphConfig(
     val eventpollSize: UInt?,
     val epitemEp: UInt?,
     val epitemFllink: UInt?,
+    val epitemGen: UInt?,
+    val epitemRefs: UInt?,
+    val epitemDepth: UInt?,
+    val epitemRefcount: UInt?,
     val pipeBuffer: UInt?,
     val pipeFlags: UInt?,
     val pipeSlots: UInt?,
@@ -22,6 +26,10 @@ data class FdGraphConfig(
         eventpollSize?.let { add("eventpoll_size" to it.toULong()) }
         epitemEp?.let { add("epitem_ep" to it.toULong()) }
         epitemFllink?.let { add("epitem_fllink" to it.toULong()) }
+        epitemGen?.let { add("epitem_gen" to it.toULong()) }
+        epitemRefs?.let { add("epitem_refs" to it.toULong()) }
+        epitemDepth?.let { add("epitem_depth" to it.toULong()) }
+        epitemRefcount?.let { add("epitem_refcount" to it.toULong()) }
         pipeBuffer?.let { add("pipe_buffer" to it.toULong()) }
         pipeFlags?.let { add("pipe_flags" to it.toULong()) }
         pipeSlots?.let { add("pipe_slots" to it.toULong()) }
@@ -37,6 +45,10 @@ data class FdGraphConfig(
         "eventpoll_size" -> copy(eventpollSize = value.toUInt())
         "epitem_ep" -> copy(epitemEp = value.toUInt())
         "epitem_fllink" -> copy(epitemFllink = value.toUInt())
+        "epitem_gen" -> copy(epitemGen = value.toUInt())
+        "epitem_refs" -> copy(epitemRefs = value.toUInt())
+        "epitem_depth" -> copy(epitemDepth = value.toUInt())
+        "epitem_refcount" -> copy(epitemRefcount = value.toUInt())
         "pipe_buffer" -> copy(pipeBuffer = value.toUInt())
         "pipe_flags" -> copy(pipeFlags = value.toUInt())
         "pipe_slots" -> copy(pipeSlots = value.toUInt())
@@ -50,7 +62,7 @@ data class FdGraphConfig(
     }
 
     companion object {
-        val EMPTY = FdGraphConfig(null, null, null, null, null, null, null, null, null, null, null, null)
+        val EMPTY = FdGraphConfig(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null)
 
         /* Prefixes are load-bearing: ProfileResolver.nativeValue only rewrites a route
          * field for a path carrying this route's name. Do not strip them. */
@@ -58,6 +70,10 @@ data class FdGraphConfig(
             eventpollSize = value("fd_graph.eventpoll_size")?.toUInt(),
             epitemEp = value("fd_graph.epitem_ep")?.toUInt(),
             epitemFllink = value("fd_graph.epitem_fllink")?.toUInt(),
+            epitemGen = value("fd_graph.epitem_gen")?.toUInt(),
+            epitemRefs = value("fd_graph.epitem_refs")?.toUInt(),
+            epitemDepth = value("fd_graph.epitem_depth")?.toUInt(),
+            epitemRefcount = value("fd_graph.epitem_refcount")?.toUInt(),
             pipeBuffer = value("fd_graph.pipe_buffer")?.toUInt(),
             pipeFlags = value("fd_graph.pipe_flags")?.toUInt(),
             pipeSlots = value("fd_graph.pipe_slots")?.toUInt(),

@@ -265,7 +265,37 @@ vr_guard {
 | `route.multicast_waiter.task_offset` / `route.multicast_waiter.lock_offset` | Task / lock field offsets in the buffer |
 | `offset.empty_zero_page` | `empty_zero_page` offset |
 
-### 4.7 KernelSnitch values (`kernelsnitch`)
+### 4.7 fd_graph route fields (`route.fd_graph`)
+
+Kernel geometry for the `fd_graph` middleware. The struct-derived values are
+verified against the target kernel's BTF; the tuning values are route
+parameters, not struct offsets.
+
+| Field | Meaning |
+|---|---|
+| `route.fd_graph.eventpoll_size` | `sizeof(struct eventpoll)` |
+| `route.fd_graph.epitem_ep` | `struct epitem.ep` — back-pointer to the owning eventpoll |
+| `route.fd_graph.epitem_fllink` | `struct epitem.fllink` — the fd-graph chain link |
+| `route.fd_graph.epitem_gen` | `struct eventpoll.gen` — generation counter |
+| `route.fd_graph.epitem_refs` | `struct eventpoll.refs` — reference list head |
+| `route.fd_graph.epitem_depth` | `struct eventpoll.loop_check_depth` (repo-facing name `epitem_depth`) |
+| `route.fd_graph.epitem_refcount` | `struct eventpoll.refcount` — disposal refcount |
+| `route.fd_graph.pipe_buffer` | `sizeof(struct pipe_buffer)` |
+| `route.fd_graph.pipe_flags` | Offset of `flags` within `struct pipe_buffer` (`PIPE_BUF_FLAG_CAN_MERGE` lives here) |
+| `route.fd_graph.pipe_slots` | Slots per pipe ring |
+| `route.fd_graph.pipe_ring` | Total pipe ring bytes |
+| `route.fd_graph.pipe_object` | Spacing of reclaimed objects in the ring |
+| `route.fd_graph.graph_width` / `graph_fanout` / `graph_edges` | fd-graph dimensions (`graph_edges = graph_width * graph_fanout`) |
+| `route.fd_graph.objects_per_order3` | Reclaimed objects sprayed per attempt |
+
+The four `epitem_gen` / `epitem_refs` / `epitem_depth` / `epitem_refcount`
+values support the independent verification sentinels; they replace
+self-readback as the success criterion. All struct offsets for
+`6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k` were confirmed from that
+kernel's BTF (`struct eventpoll` size `0xd0`; `gen` `0xa8`, `refs` `0xb0`,
+`loop_check_depth` `0xb8`, `refcount` `0xbc`).
+
+### 4.8 KernelSnitch values (`kernelsnitch`)
 
 Shared by every route (KernelSnitch drives the `mm_struct` leak search), not
 affected by route choice:
