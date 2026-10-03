@@ -196,10 +196,13 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
 
 ### 2.5.5 仍未确认（批次 D 的剩余前置）
 
-1. ~~**`pipe_buffer` 槽位的回收与重占机制**~~ → **回收手段已确认**（见 §2.7），
-   **`fake_fllink` 构造已确认**（见 §2.8：`base | 0x108` = `LIST_POISON1 + 8`）。
-   剩余未确认：`fake_count` 的落点、`EPOLL_CTL_DEL` 在其中的确切角色，
-   以及 `+8` 偏移量的选取依据。
+1. ~~**`pipe_buffer` 槽位的回收与重占机制**~~ → **回收手段已确认**（§2.7：
+   `F_SETPIPE_SZ` 8K/128K 两级缩放 + `F_GETPIPE_SZ` 回读，失败即 `exit(-1)`），
+   **`fake_fllink` 构造已确认**（§2.8：`base | 0x108` = `LIST_POISON1 + 8`），
+   **投递链已确认**（§2.9：240 路 `write` 喷洒 + `pread64` 回读；
+   §2.10：240 根管道由 fd 表 `malloc(0x780)` 建立，空槽初值 `-1`）。
+   剩余未确认：`fake_count` 的落点、`EPOLL_CTL_DEL` 在其中的确切角色、
+   `+8` 偏移量的选取依据，以及槽位被重占为受控对象后的具体布局。
 2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
    `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
    需 BTF 或真机读回交叉验证（批次 B 的前置）。
@@ -461,6 +464,66 @@ pr_info("fd_graph: reclaim_small complete fds=%u\n", 0xf0);
 与 stub `expand_region` 的 `map_anonymous(0xa000, ...)` 尺寸一致 ——
 stub 的常量同样来自本函数，只是丢了语义。
 
+### 2.10 fd 表与 240 根管道的建立（投递链的最后一环）
+
+`pipe_flags_candidate` 起始段（`annotated.c:4583`–`4612`）：
+
+```c
+FUN_002580f4(lVar6, 0x42, 0x10000);          /* memset(payload_buf, 'B', 64K) */
+DAT_002683b0 = FUN_0025a670(0x780);          /* malloc(0x780) → drain 表   */
+DAT_002683a8 = FUN_0025a670(0x780);          /* malloc(0x780) → reclaim 表 */
+FUN_002580f4(lVar6, 0xff, 0x780);            /* 两表均 memset 0xff        */
+do {
+  iVar2 = FUN_00235e44(DAT_002683a8 + lVar6);   /* 建管道并把 fd 写进该槽 */
+  if (iVar2 != 0) { ...错误退出... }
+  FUN_00220f7c(DAT_002683a8 + lVar6, 2, "reclaim_small", uVar14);
+  bVar1 = uVar14 < 0xef;  lVar6 += 8;                     /* 240 槽，步长 8 */
+} while (bVar1);
+FUN_0021d2f8("pipe_worker","phase","name=reclaim_small complete=%zu fds=%d", 0xf0, uVar3);
+/* 之后 reclaim_expand：FUN_00220f7c(&table[i], 0x20, "reclaim_expand", i) */
+```
+
+要点：
+
+1. **表是用户态数组**：`0x780 = 1920 = 240 × 8`。`memset 0xff` 使每槽初值
+   `0xffffffffffffffff`，即 **fd = -1（空槽标记）**，而不是 0。
+2. **每槽一根管道**：`FUN_00235e44(&table[i])` 建管道并把 fd 写回槽位。
+   故「240」既是槽数也是**管道根数**。
+3. **两级缩放**：`reclaim_small` 用 `param_2=2` → `2 × 0x1000 = 8 KiB`；
+   `reclaim_expand` 用 `0x20` → `32 × 0x1000 = 128 KiB`。
+4. 顶部日志常量与 profile **逐项一致**：
+   `pipe_slots=0x20(32)`、`pipe_buffer=0x28(40)`、`ring_request=0x500(1280)`。
+
+#### 2.10.1 stub 的 `0x780`/`0xff` 是忠实移植，但丢了全部语义
+
+`fd_graph_route.cpp:170`–`193`：
+
+```cpp
+reclaim_region = MappedRegion::map_anonymous(0x780, PROT_READ|PROT_WRITE);
+memset(reclaim_region->data(), 0xff, 0x780);
+for (uint32_t i = 0; i < 0xf0; i++) { reclaim_slots[i] = 0; }   /* ← 应为 fd */
+```
+
+尺寸（`0x780`）、填充值（`0xff`）、循环次数（`0xf0`）、表名（reclaim/drain）、
+阶段名（`reclaim_small` / `reclaim_expand`）**全部移植正确**。
+丢失的是四件事：
+
+| 项 | 原实现 | stub |
+|---|---|---|
+| 分配方式 | `malloc` | `mmap`（等价可用，非缺陷） |
+| 槽初值 | `0xff…ff`（fd = -1，空槽） | `0`（fd = 0，**语义相反**） |
+| 建 240 根管道 | `FUN_00235e44(&table[i])` | **无** |
+| 缩放管环 | `F_SETPIPE_SZ` 8K/128K + 回读 | **无** |
+
+> 槽初值这一项需特别注意：stub 把空槽写成 `fd = 0`（stdin），
+> 而原实现用 `-1` 作「未填充」标记。若批次 D 复用此表，**必须沿用 `-1` 语义**，
+> 否则会把 fd 0 当成有效管道。
+
+**证据分级**：`fcntl`(25) 已由指令核对（`0x2555c0: mov x8, #0x19`，经
+`FUN_00228168` 包装，§2.7）。`malloc` / `memset` / 建管道三者
+（`0x25a670` / `0x2580f4` / `0x235e44`）**无裸 `mov x8`**，属 libc 级包装，
+其角色由调用形态推断（尺寸/填充值/槽指针），非指令级确证。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
@@ -485,9 +548,13 @@ stub 的常量同样来自本函数，只是丢了语义。
 | 碰撞页 | `reinterpret_cast<uint64_t>(ks->collisions)`（计数当地址，仅日志） | `collision_shape pre/post` 校验 +1 |
 | 诱饵 | 无 | `decoy_unlink` + `fd_preflight` |
 | 抢槽 | 无 `active_slot` 选取 | `RECLAIM_HIT mode=pipe/zero` |
-| `fllink` | 无 | `KNOWN_PAGE fake_fllink` |
-| `pipe_flags` | 无（只打印偏移 0x18） | `pipe_flags_redirect` 改写 bit4 |
-| 写入 | `splice(..., static_cast<int>(target), ...)` ← 内核地址当 fd，必然 `EBADF` | `pipe_worker` 写受控槽位（**不用 splice**） |
+| `fllink` | 无 | `fake_fllink = base \| 0x108`（§2.8，`LIST_POISON1 + 8`） |
+| `pipe_flags` | 无（只打印偏移 0x18） | `pipe_flags_redirect` 改写 bit4（`CAN_MERGE`，§2.6.1） |
+| **fd 表** | `map_anonymous(0x780)` + `memset 0xff`，槽初值 **0** | `malloc(0x780)` + `memset 0xff`，槽初值 **`-1`**（空槽标记，§2.10） |
+| **建管道** | **完全没有** | 每槽一根，共 **240** 根（`FUN_00235e44`，§2.10） |
+| **缩放管环** | **完全没有** | `F_SETPIPE_SZ` 8KiB/128KiB 两级 + `F_GETPIPE_SZ` 回读（§2.7） |
+| 写入 | `splice(..., static_cast<int>(target), ...)` ← 内核地址当 fd，必然 `EBADF` | **240 路 `write(fd_table[i], payload, len)`**，每次须返回全长；命令字 `'W'` 门控（§2.9） |
+| 回读 | 无 | `pread64` **按槽位偏移**校验 + `PIPE_OBSERVED`（§2.9） |
 | 时序 | **已有**扫描 `{0,1,2,4,8,12,20,32,48,64}`（`fd_graph_route.cpp:248`），但每个 delay 只试 1 次 | 同序列，且每档多次重试 + `tries`/`duration` 统计 |
 | 计数 | `reclaim_hits++` 在 `sp==8` 判断**之外**（`:277`），实际统计的是「vmsplice 返回 8」，与 `preload.so` 的 `RECLAIM_HIT` 语义不同名 | `RECLAIM_HIT` 记录 `generation`/`outer_depth`/`can_merge`/`duration_ns` |
 | 验证 | `*verify == value`（自读回） | `generation`/`refs`/`depth`/`refcount`/`carrier_readback` 独立哨兵 |
@@ -502,14 +569,23 @@ stub 的常量同样来自本函数，只是丢了语义。
 
 ## 6. 缺失清单（按依赖顺序）
 
+已被 §2.7–§2.10 **确认取值**的项标注 ✅（实现时按该处描述照做，无需再取证）：
+
 1. `late_refs`：诱饵 unlink + fd preflight。
 2. 活跃槽位选取与 `RECLAIM_HIT` 两模式判定。
-3. `fake_fllink` 构造 + `pipe_flags`(0x18) bit4 改写。
-4. `pipe_worker` 线程模型：持槽 + `payload_writes` + `resize_sample`。
-5. 每档 delay 的**多次重试与统计**（stub 每档只试 1 次，且 `RACE_SUMMARY` 未记录 `delay_us`，
+3. ✅ `fake_fllink` 构造（§2.8：`base | 0x108`）；
+   ⚠️ `pipe_flags`(0x18) 的 `CAN_MERGE` 写入点仍未定位，改为实现期实测。
+4. ✅ `resize_sample` 语义（§2.7：`F_SETPIPE_SZ` 8K/128K + 回读，**失败即 `exit(-1)`**）。
+5. ✅ fd 表 + 建管道（§2.10：`malloc(0x780)`、240 槽步长 8、**空槽初值 `-1`**、
+   每槽一根管道）。
+6. ✅ `payload_writes` 投递（§2.9：命令字 `'W'` 门控、240 路 `write` 须返回全长、
+   `pread64` 按槽位偏移回读）。
+7. `pipe_worker` 线程模型（持槽 + 与主线程的握手；§2.5.3 的自旋点）。
+8. 每档 delay 的**多次重试与统计**（stub 每档只试 1 次，且 `RACE_SUMMARY` 未记录 `delay_us`，
    无法定位命中档位）。
-6. 独立验证（哨兵 + carrier readback），替换自读回。
-7. 撤销 stub 中把内核地址当 fd 的 `splice()` 调用（该调用恒 `EBADF`）。
+9. 独立验证（哨兵 + carrier readback），替换自读回。
+10. 撤销 stub 中把内核地址当 fd 的 `splice()` 调用（该调用恒 `EBADF`）。
+11. ⚠️ **沿用 `-1` 空槽语义**（§2.10.1）：stub 现写 `0`，会把 fd 0（stdin）当有效管道。
 
 ## 7. 下一步
 
