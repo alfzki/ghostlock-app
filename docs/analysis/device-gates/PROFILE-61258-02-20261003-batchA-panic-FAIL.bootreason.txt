@@ -1,0 +1,6 @@
+sys.boot.reason = kernel_panic
+ro.boot.bootreason = kernel_panic
+ro.boot.shutdown_reason = 
+persist.sys.boot.reason = 
+sys.boot.quota.enabled.bootreason = 
+uptime_now=29
