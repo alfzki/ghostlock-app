@@ -96,6 +96,24 @@ MTK 的 SoC 回退值 `KIMAGE_TEXT_BASE - MTK_VADDR_BASE` 恰好等于 `P0_PHYS_
 数据会直接 panic，与「三次冷机门禁全部 kernel_panic」的现象一致。按 `AGENTS.md` 的要求，
 单次 panic 不能归因，所以这仍是**待真机验证的假设**，不是已证结论。
 
+#### 与 `kernel-phys-offset-plan.md` 的交叉核对
+
+`docs/analysis/kernel-phys-offset-plan.md`（2026-10-01）为**另一个** MTK 设备
+（MTK6893 / moto，`6.6.127-android15-8-…`）引入了本 profile 字段，并记录了同一类故障：
+真机日志为 `[-] W1: SELinux: target 0x0000000000000000 is outside the direct map, not attempting`。
+即物理地址对不匹配会让 W1 目标算错，是本仓库已记录过的失效模式；本次 6.12.58 的偏差形态
+不同（偏 `0xffff0000` 而非归零），但根因同属「image→direct-map 换算的物理地址对错误」。
+
+该计划的 D2/D4 留下两个未决点，对本设备仍然适用：
+
+- 缺省回退值是 `P0_PHYS_OFFSET`（`0x80000000`），本批次沿用它。
+- 真实取值本应由 `tools/mtk-phys/mtk-phys.sh` 在设备上实测。
+
+注意本设备的**特殊性**：preload.so 成功时记录 `phys_load_delta=0x0`，说明该机上
+`kernel_phys_load == kernel_phys_offset`（内核镜像恰好装在 DRAM 基址），两个值在换算中抵消。
+因此批次 1b 取「两者相等」是符合设备事实的，而具体的 `0x80000000` 只因相等而可以取任意值。
+若日后用 mtk-phys.sh 实测出不相等的一对值，必须重新推导 W1 目标地址，不能直接填入。
+
 ### 批次 3：构建与静态门禁（已完成）
 
 | 项 | 结果 |
