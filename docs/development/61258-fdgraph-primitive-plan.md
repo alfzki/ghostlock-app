@@ -56,6 +56,39 @@ fd_graph 不是偏好选择而是唯一候选，因此本 port 无法绕开。
 > 现无 `select_stack` 块也无 `compact_waiter`。结论本身仍有效（select_stack 不可行），
 > 只是「保持 select_stack」的表述已过时。
 
+### 1.2 已解决的部分与真正的缺口
+
+把「写什么」与「怎么送到」分开看，batch D 的范围会小得多：
+
+**已解决且已验证 —— 写什么。** non-compact waiter 几何已在代码库内且双源核对
+（`src/core/kernel/target.h:77-85`，并由 `ghostlock-extract boot.img --analysis`
+对本镜像独立输出同一组值）：
+
+```
+FAKE_WAITER_TREE_PRIO_OFF   = 0x18      FAKE_WAITER_PI_TREE_PRIO_OFF     = 0x40
+FAKE_WAITER_TREE_DEADLINE_OFF = 0x20    FAKE_WAITER_PI_TREE_DEADLINE_OFF = 0x48
+FAKE_WAITER_PI_TREE_ENTRY_OFF = 0x28    FAKE_WAITER_TASK_OFF             = 0x50
+FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
+                                           FAKE_WAITER_WW_CTX_OFF         = 0x68
+```
+
+且崩溃证据指向的正是这个结构：首次门禁的 pstore 调用栈为
+`futex_lock_pi → remove_waiter → rt_mutex_cleanup_proxy_lock → rt_mutex_adjust_prio_chain`，
+即内核正在遍历 **rt_mutex PI waiter** 链时被破坏。
+换言之，**要写的目标结构是已知的、已验证的，且崩溃本身印证了它。**
+
+**真正的缺口 —— 怎么送到。** 唯一未解决的是「如何把写落到 PI walk 实际遍历到的
+那个 waiter 上」：
+- `select_stack` 送不到（窗口 `[0,14]` 与所需 `[14,27]` 不交）；
+- `tcp_zerocopy` 送不到（写 `heap.current.base`，而 zc 目标是 `mapping + page_size`）；
+- `fd_graph` 送不到（stub 把内核地址当 fd，恒 `EBADF`）；
+- `preload.so` **送得到**（同机同 kernel PASS）。
+
+因此 batch D 的本质不是「发明一种新原语」，而是**把 preload.so 已验证的投递路径
+（epoll fd 图 + `pipe_buffer` `CAN_MERGE` + 命令字驱动的 `write`）移植过来**，
+落点沿用上面已验证的 waiter 常量。这与 §1.1 的结论一致：
+三条旧 route 与 fd_graph 卡在同一个问题上，而答案就在 preload.so 里。
+
 ## 2. 影响文件
 
 | 文件 | 改动性质 |
