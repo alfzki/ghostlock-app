@@ -273,7 +273,10 @@ python3 tools/cmp_disasm.py <基线> build/native/ghostlock   # 建立并归档�
   否则 app 显示 unsupported，Run 不会出现。
 - 本 profile `recommend_shizuku = 0`，不需要 Shizuku。
 - APK 已签名（Android Debug 证书），`arm64-v8a` 的 `libghostlock.so` / `libextract.so`、
-  `index.conf` 与本 profile 均在包内。
+  `index.conf` 与本 profile 均在包内。文件名里的版本号每次构建都会变（如
+  `GhostLock-v1.2(563)-…-debug.apk`），按目录取最新那个即可。
+- **改完 `profile-core` 必须重新构建 APK**：批次 2c 的修复就在 `profile-core` 里，
+  旧 APK 里仍是空几何的 `FdGraphConfig`，装上去等于没修。
 - 包内 `libghostlock.so` 与当前 `build/native/ghostlock` 重新 `llvm-strip` 后**逐字节相同**
   （体积/哈希差异来自 `build.gradle.kts` 里刻意只对打包副本 strip）。
 - 导出的 GLK1 `.bin` 里 `kernel_phys_load` 与 `kernel_phys_offset` 都是 `0x80000000`，
