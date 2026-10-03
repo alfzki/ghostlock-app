@@ -352,6 +352,13 @@ void FUN_00220f7c(undefined4 *param_1, undefined8 param_2, ...) {
 > `../decompiled/annotated.c` 提供带函数边界与 Ghidra 建议名的可读 C。
 > 注意其数值渲染约定：**裸数为十进制**（`= 10;` 即 0xa），
 > `0x` 前缀才是十六进制。误按十六进制读会把 `10` 当成 `CAN_MERGE`(0x10)。
+>
+> **Ghidra 建议名不可尽信**：名为 `reclaim_race` 的 `FUN_0022264c`（`annotated.c:5847`）
+> 实际**只负责打印** `RACE_SUMMARY` —— 它接收 10 组已算好的统计数组，
+> 逐档输出，不做任何竞态。真正的竞态在编排函数内（§2.4/§2.5）。
+> 该函数同时以立即数形式硬编码了 delay 阶梯
+> `{0, 1, 2, 4, 8, 0xc, 0x14, 0x20, 0x30, 0x40}`，
+> 与 stub 的 `delays[]`（`fd_graph_route.cpp:248`）**逐项一致**。
 
 ### 2.8 指令级：`fake_fllink` 的构造（`LIST_POISON1 + 8`）
 
