@@ -93,8 +93,8 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 
 | 文件 | 改动性质 |
 |---|---|
-| `src/core/route/fd_graph_route.cpp` | 重写 `execute()`；新增 `pipe_worker` 线程与槽位状态 |
-| `src/core/route/fd_graph_route.h` | 新增成员（worker 句柄、槽位、哨兵、统计） |
+| `src/core/route/fd_graph_route.cpp` | 重写 `execute()`；新增 `pipe_worker` 线程、240 根管道、fd 表（drain + reclaim 各 `0x780`）、64 KiB 暂存区 |
+| `src/core/route/fd_graph_route.h` | 新增成员（worker 句柄、fd 表、暂存区、哨兵、统计） |
 | `src/core/profile/model.h` | `FdGraphLayout` 增 4 个 `optional<uint32_t>` |
 | `src/core/profile/binary.cpp` | 字段表增 4 项（**顺序须与 Kotlin 一致**） |
 | `app/.../data/route/FdGraphConfig.kt` | `entries()`/`apply()`/`from()` 同步 4 键 |
@@ -125,9 +125,24 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 供独立验证用。必须同步 native `binary.cpp` 与 Kotlin `FdGraphConfig`（键名逐字一致、
 顺序一致），并更新 golden 哈希。
 
-**前置**：先确认这 4 个偏移确为 6.12.58 的 `eventpoll`/`epitem` 字段偏移
-（`preload.so` 串给出 `gen=0xa8 refs=0xb0 depth=0xb8 refcount=0xbc`，
-但那是**通用值**，需 BTF 或真机读回交叉验证）。
+**前置（当前阻塞）**：这 4 个偏移必须来自 **6.12.58 的 BTF**，三条替代路径均已排除：
+
+1. **生产设备读不到**：`ro.build.type=user`、`ro.secure=1` → `adb root` 拒绝，
+   `/sys/kernel/btf/vmlinux` 拒绝读取。
+2. **工作区无 BTF**：`work/target_Image.bin` 是 `ANDR` boot 镜像容器（非裸 kernel
+   Image），6 处 BTF magic 候选**全部通不过 header 校验**；其余目录亦无
+   `boot.img` / `vmlinux` / `*.btf`。
+3. **公开源码不可替代**：`torvalds/linux` main 的 `struct eventpoll` 字段顺序
+   推算与 `preload.so` 串**不自洽**（`refs` 若在 `0xb0` 占 16 B 至 `0xc0`，
+   与 `depth=0xb8`、`refcount=0xbc` 冲突），字段增删会移动偏移。
+
+⇒ **需提供 6.12.58 的 `boot.img`**。批次 B 与 E（依赖其哨兵字段）因此阻塞，
+但**不阻塞批次 A 与 D**。
+
+**正面消息**：同一批验证已**正向确认**了 profile 的另外 12 个常量中的 3 个 ——
+`objects_per_order3=16`、`pipe_object=2048`、`pipe_flags=24` 由成功样本的
+`PIPE_TARGET` 日志实参直接印证（scoping §2.11）。几何本身大体可信，
+缺口收敛为这 4 项。
 
 ### 批次 C：补齐机制证据（只读分析，零代码风险）
 
@@ -218,18 +233,36 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 | `epoll_fd` / `pipe_read` / `pipe_write` | `prepare()` | `FdGraphRoute`（`UniqueFd`） | consumer 线程 | `destroy()` | `reset()`；stuck 时 `retain_for_process_lifetime()` |
 | `consumer_thread` | `prepare()` | `PthreadOwner` | `disarm()` | join 后 | `release()` |
 | **`pipe_worker`（新增）** | 批次 D | `PthreadOwner` | 主线程等待其 payload 写 | **必须先于 pipe fd 关闭** | `request_stop()`+`join()` |
+| **240 根管道（新增）** | 批次 D，`pipe2()` | `FdGraphRoute` | worker 经 `table[i]` 取 fd | `disarm()`/`destroy()` | 逐个 `close()`；stuck 时并入兜底 |
+| **fd 表（新增，两张）** | 批次 D，`malloc(0x780)` | `FdGraphRoute` | worker **仅在投递窗口内** | `destroy()` | `free()` |
+| **用户态暂存区（新增）** | 批次 D，`malloc(0x10000)` + `memset 0x42` | `FdGraphRoute` | 建表 → 喷入内核 | **必须晚于喷洒完成** | `free()` |
 | **槽位引用（新增）** | 批次 D | worker 线程 | 主线程**不得**在 free 后访问 | worker 停止访问后 | 内核侧（受控对象） |
-| reclaim/drain/expand region | `execute()` | `MappedRegion` | 主线程 | `execute()` 返回 | RAII |
+
+#### 4.1 新增对象带来的三条生命周期约束
+
+批次 C 确认了投递链的形状（scoping §2.9–§2.12），由此产生三条
+**既有代码里不存在、必须新增**的约束：
+
+1. **暂存区必须活过喷洒。** 受控表在 64 KiB 用户态缓冲里构造
+   （§2.12），再被复制进刚释放的管环。因此 `free()` 暂存区必须发生在
+   「喷入内核」完成**之后** —— 这是最容易被写错成「进 `execute()` 就 RAII 收掉」
+   的地方，且写错不会立刻崩，只会让下一次喷洒拿到已释放内存。
+2. **fd 表的空槽语义是 `-1`。** 原实现用 `0xff…ff` 作「未填充」标记（§2.10）；
+   stub 用的 `0` 是 **fd 0（stdin）**。批次 D 必须沿用 `-1`，否则会把 stdin
+   当成有效管道写入 —— 这是一个**语义反转**，不是笔误。
+3. **240 根管道的 fd 与槽位必须成对回收。** 表项是 8 字节槽里的 fd，
+   关闭时须按同一索引走，不得依赖 fd 连续性。
 
 必须遵守的既有顺序（重构不得改变）：
 
 1. 所有参与者**停止访问** → join worker → 再 unlink/释放管道槽。
 2. `disarm()` 必须在 `destroy()` 之前（`do_fd_graph_fake_lock_route` 已如此）。
 3. `consumer_stuck` 的既有兜底路径（`retain_for_process_lifetime()` +
-   `ROUTE_DIRTY_FAILURE`）**保持不变**，新增 worker 也要纳入该判定。
+   `ROUTE_DIRTY_FAILURE`）**保持不变**，新增 worker 与 240 根管道也要纳入该判定。
 
 **UAF 边界**：被回收的 `pipe_buffer` 槽位是漏洞原语（**唯一**允许的
-use-after-free）；辅助对象、race 状态、缓冲区、同步资源**一律不得**跨回收点访问。
+use-after-free）；辅助对象、race 状态、**fd 表**、**暂存区**、同步资源
+**一律不得**跨回收点访问。
 
 ## 5. 验证计划（每批门槛）
 
@@ -259,29 +292,41 @@ make -C src lint-tidy          # 0 findings
   同类资源（管道槽），批次 D 必须逐条过 §4 的审查表。
 - **归因限制**：`KERNEL-PANIC-01` 允许同构建 PASS/panic/PASS；
   判定因果要求同构建复现 + 冷启动复跑，不得凭单次结果。
+- **批次 C 已完成**（scoping §2.4–§2.12）：投递链各环取值均已确认，
+  **不再是批次 D 的前置**。批次 D 可以直接进入实现。
 - **停止条件**：
-  - 批次 C 的三项遗留（scoping §2.5.5：`pipe_buffer` 槽位重占机制、
-    `gen`/`refs`/`depth`/`refcount` 真值、bit4 写入点）未取得指令级证据
-    → 不进批次 D。**其中第二项需 BTF/真机读回**，当前设备为 production build
-    （`adb root` 不可用、`/sys/kernel/btf/vmlinux` 拒绝读取），工作区亦无
-    `boot.img`/`vmlinux`/BTF，故**批次 B 在拿到 BTF 前不得填值**。
   - 批次 A 后真机仍 panic 且 `chain_hits` 仍为 0 → 说明破坏源不在无效写入，
     需回到批次 C 重新定位，不得继续叠加机制。
   - `cmp_disasm` 出现无法解释的攻击函数差异 → 停止并调查。
+  - **批次 B 在拿到 6.12.58 BTF 前不得填值。** 已确认无路可走：
+    设备为 production build（`adb root` 拒绝、`/sys/kernel/btf/vmlinux` 拒绝读取）；
+    工作区 `work/target_Image.bin` 是 `ANDR` boot 镜像容器而非裸 kernel Image，
+    6 处 BTF magic 候选**全部通不过 header 校验**；
+    main 分支源码推算与 `preload.so` 串**不自洽**（scoping §2.6.3），
+    故不可替代。**批次 B 与批次 E 均因此阻塞，不阻塞 A 与 D。**
+  - 批次 D 中 `CAN_MERGE` 写入点若实测无法定位 → 停止该步并重新取证，
+    **不得**以猜测的偏移硬编码。
 - 批次 A/B 之间若真机不再 panic，仍**不得**标记 6.12.58 为 supported：
   `chain_hits` 未成功即 W1 未完成。
 
 ## 7. 评审要点
 
-批次 C（只读分析）已完成大部分，结论见 scoping §2.4/§2.5/§2.6。请确认：
+批次 C（只读分析）**已完成**，结论见 scoping §2.4–§2.12。
+当前可执行的是 **A → D**；**B 与 E 因缺 BTF 阻塞**（见 §3 批次 B）。
 
-1. **批次顺序**：A（移除无效与错误代码，低风险对照）→ B（几何扩展，依赖 BTF）
-   → D（实现投递）→ E（独立验证）→ F（冷启动门禁）。是否认可先做 A？
-2. **批次 B 的 4 个新字段**（`gen`/`refs`/`depth`/`refcount`）属 wire/profile
-   格式变更，影响面大于 route 本身；且**当前无法验证取值**。是否接受
-   「拿到 BTF 后再做」，还是希望本轮先只做 A？
-3. **投递机制的设计前提**：batch D 是移植 `preload.so` 已验证的投递路径，
-   落点沿用已验证的 waiter 常量（§1.2）。是否同意「先完成批次 C 遗留的
-   `pipe_buffer` 槽位重占机制取证，再评审批次 D」？
-4. **BTF 来源**：需要 6.12.58 的 `boot.img`（或可读 BTF 的设备）。
-   当前 production 设备无法读取，是否可提供 boot.img？
+请确认：
+
+1. **批次顺序**：是否认可 **先 A 再 D**？
+   - A 低风险，且是「不写是否就不崩」的唯一干净对照（批次 D 一旦实现，
+     该因果结论就再也拿不到了）。
+   - D 已具备全部取值（§3 批次 D 的 11 步），不再有取证前置。
+   - B/E 暂缓，等 `boot.img`。
+2. **`boot.img` 来源**：需要 6.12.58 的 `boot.img`（或可读 BTF 的设备），
+   以解锁 B 与 E。是否可提供？在拿到之前，是否同意 **A → D → F（门禁）** 先走一轮？
+3. **§4.1 的三条生命周期约束**是否已足够：其中「暂存区必须活过喷洒」
+   与「空槽语义 `-1` 而非 `0`」是批次 D 最易写错的两点，
+   写错都不会立刻崩（后者是把 stdin 当管道，前者让下次喷洒读到已释放内存）。
+4. **验收判据**：批次 D 的成功判据建议沿用 `preload.so` 的形态 ——
+   每次 `write` 返回全长 + `pread64` 按槽位偏移读回（`PIPE_OBSERVED`），
+   **不以** `*verify == value` 自读回为准（stub 现状即此法，无区分力）。
+   是否认可改用 `chain_hits`/`bit4_hits` 口径？
