@@ -199,6 +199,41 @@ def check_nofile(serial: str) -> Result:
     return Result("nofile", "SKIP", "no 'open files' row in /proc/self/limits")
 
 
+def check_lock_state(serial: str) -> Result:
+    """Record wakefulness and keyguard state.
+
+    Not a gate condition, always PASS: the device is legitimately either state.
+    It is recorded because omitting it made two earlier runs uninterpretable. A
+    30s screen timeout against a 180s run means the phone sleeps mid-run, vivo's
+    background freezer starts freezing processes, and a parked PI-futex waiter
+    meets the freezer. That was a live hypothesis for why one of three runs
+    panicked, and a fourth locked run that did not panic killed it. The only way
+    to keep interpreting runs is to always write the state down.
+    """
+    code, out = run_adb(serial, "shell", "dumpsys", "power")
+    wakefulness = "unknown"
+    for token in ("mWakefulness=Awake", "mWakefulness=Asleep"):
+        if token in out:
+            wakefulness = token.split("=", 1)[1]
+            break
+    code2, out2 = run_adb(serial, "shell", "dumpsys", "window")
+    keyguard = "unknown"
+    if "KeyguardShowing=false" in out2:
+        keyguard = "unlocked"
+    elif "KeyguardShowing=true" in out2:
+        keyguard = "locked"
+    timeout_code, timeout_out = run_adb(
+        serial, "shell", "settings", "get", "system", "screen_off_timeout"
+    )
+    screen_off = timeout_out.strip() if timeout_code == 0 else "unknown"
+    return Result(
+        "lock_state",
+        "PASS",
+        f"recorded only: wakefulness={wakefulness} keyguard={keyguard} "
+        f"screen_off_timeout={screen_off}",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify device-gate preconditions before spending a run."
@@ -234,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         check_kernelsu(serial),
         check_release(serial, args.release),
         check_nofile(serial),
+        check_lock_state(serial),
     ]
     for result in results:
         print(result.render())

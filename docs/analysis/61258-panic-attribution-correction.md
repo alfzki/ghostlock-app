@@ -1,5 +1,16 @@
 # 6.12.58 panic 归因更正：panic 发生在 **GhostLock 自身**，且在 **PI-futex 路径**，与 `fd_graph` 无关
 
+> ## ⚠️ 本文第 3 节的「批次 A 触发 panic」已下调（2026-10-03 晚）
+>
+> 补测表明 batch A 的 panic 是**间歇性**的：同构建、同 profile 下 3 次已知运行中
+> 仅 1 次 panic，另有 1 次锁屏运行同样未 panic（故「锁屏导致」亦被证伪）。
+> ⇒ 批次 A **不是确定性 FAIL**，也不是安全证明；`fd_graph` 是否为成因**仍未定案**。
+> 详见 `PROFILE-61258-02-20261003-batchA-panic-FAIL.md` 的「补测」一节。
+>
+> **不受该下调影响的部分**：本文第 1、2 节（pstore 中 `Comm: libghostlock.so`、
+> `T11660` 出现 0 次、崩溃栈 100% PI-futex、零 epoll/pipe 帧）——
+> 这些是 pstore 静态事实，与间歇性无关，仍然成立。
+
 > 本文更正 `PROFILE-61258-01-20261003-fdgraph-fail.md` 的核心归因结论，
 > 并给出批次 D 应当冻结的依据。证据全部来自已归档的 pstore 与本会话门禁。
 

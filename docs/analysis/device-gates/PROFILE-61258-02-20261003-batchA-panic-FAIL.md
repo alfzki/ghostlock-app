@@ -1,6 +1,20 @@
-# PROFILE-61258-02-20261003 — batch A 无写入对照：FAIL（kernel_panic）
+# PROFILE-61258-02-20261003 — batch A 无写入对照：**INCONCLUSIVE**（间歇 panic）
 
-- **日期**：2026-10-03
+> ## ⚠️ 结论已从 FAIL 下调为 INCONCLUSIVE（2026-10-03 晚）
+>
+> **本记录初版判定为 FAIL，依据是 4 次运行中 1 次 panic。补测表明 panic 是
+> 间歇性的，FAIL 判定不成立。** 详见本文末「补测：锁屏状态不是决定变量」。
+> 保留初版原文与全部证据，未改写。
+
+## 结论（以补测后为准：INCONCLUSIVE）
+
+**批次 A 未向任何目标写入；4 次运行中 1 次 `kernel_panic`，3 次正常。**
+同构建、同 profile、同 route 终点（`RACE_SUMMARY … pipe_fill_hits=10`），
+结果不一致 ⇒ **panic 为间歇性**，符合 `AGENTS.md` `KERNEL-PANIC-01`
+「同构建可 PASS/panic/PASS」的描述。
+
+**因此批次 A 既不是「安全」的证明，也不是「崩溃」的证明**：
+它未能充当干净对照，`fd_graph` 是否为成因**仍未定案**。
 - **设备**：`10AFAL1TD7002HB`（vivo V2514，X300 Pro）
 - **内核**：`6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k`（与 profile **精确匹配**）
 - **route**：`fd_graph`（单 route）
@@ -105,3 +119,50 @@ adb shell 为 `uid=2000(shell)`，且 KernelSU 未加载（无 `su`），因此�
    可用「只跑 spray 不进 route」「只建管道不喷」等**逐段开关**二分，
    每一段仍需冷启动 + 前置 PASS。
 3. 归因前**冻结批次 D 实现**。
+---
+
+## 补测：锁屏状态不是决定变量（本记录由 FAIL 下调为 INCONCLUSIVE 的依据）
+
+### 起因：门禁协议漏掉了锁屏/休眠状态
+
+初版两次运行（#1/#2）**均未记录锁屏与唤醒状态**，这是协议缺陷。
+本机 `screen_off_timeout=30000`（30 s），而运行分别持续 300 s / 180 s，
+因此**两次运行中设备大部分时间处于息屏/锁屏状态**。vivo 的后台冻结器
+（pstore 中可见 `vivo_bgc_binder_frozen_callback … freeze 18786`）
+会在息屏后冻结后台进程，与 PI-futex waiter 的交互是该场景下的合理怀疑点。
+
+### 受控对照
+
+| 运行 | 屏幕状态（已核验） | 启动 uptime | 超时 | 结果 |
+|---|---|---|---|---|
+| #1 | **未记录**（协议缺陷） | 31 s | 300 s | 未知（被我手动重启销毁证据） |
+| #2 | **未记录**（屏幕约 30 s 后息屏） | 17 s | 180 s | **kernel_panic** |
+| #3 | **Awake + 已解锁**（`KeyguardShowing=false`，timeout 改 1800000，`stayon true`） | 72 s | 200 s | 正常（+412 s uptime，`bootreason=reboot,shell`） |
+| #4 | **锁屏/息屏**（timeout 恢复 30000，`stayon false`，运行期间息屏） | 17 s | 200 s | 正常（+337 s uptime，`bootreason=reboot,shell`） |
+
+四次运行的 route 终点**完全一致**：`RACE_SUMMARY tries=10 pipe_fill_hits=10
+chain_hits=0 bit4_hits=0 delivery=not-implemented target=ffffff80027c6960`。
+
+### 结论
+
+**运行 #4 锁屏/息屏却未 panic**，因此**锁屏状态不是决定变量**，
+「panic 由锁屏引起」这一假设**被证伪**。真实情况是
+**同构建下 panic 间歇发生（已知 3 次运行中 1 次）**。
+
+⇒ 因此本门禁**不能**判定批次 A 为 FAIL，也不能判定其为 PASS。
+
+### 我在此过程中的两次过度断言（均已被后续证据推翻，记录以免重复）
+
+1. 初版称「批次 A 触发 panic」——由 1 次 panic 推广到确定性结论，
+   未先确认可复现性。补测显示为间歇。
+2. 随后称「锁屏状态是决定变量」——由 #3（唤醒解锁）未panic 推广，
+   但 #4（锁屏）同样未 panic，**该断言错误**。
+
+### 仍然成立的部分
+
+崩溃栈证据与间歇性无关，仍然有效：
+`PROFILE-61258-01` 的 pstore 显示 panic 发生在 **GhostLock 自身线程**
+（`PID: 14586 Comm: libghostlock.so`），且栈 **100% 位于 PI-futex 路径**
+（`futex_lock_pi → rt_mutex_cleanup_proxy_lock → remove_waiter →
+rt_mutex_adjust_prio_chain`），**零** epoll/pipe 帧。
+该结论见 `docs/analysis/61258-panic-attribution-correction.md`，不受本次下调影响。
