@@ -215,6 +215,10 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
    **生产者/消费者握手**，不是标志位写入。
    定位必须带类型上下文（从 `pipe_buffer` 基址 + 槽位索引做数据流，
    并确认被写值的定义来源），仅凭偏移字面量不可行。
+   第三个已排除的候选：`annotated.c` 中 4 处 `uVar | 0x10`
+   （`FUN_00234a28` 等）经查是 **mmap 包装函数**，
+   `0x22 | 0x10` 即 `MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED`，
+   底层调用 `FUN_00255e40(..., prot, flags, -1, 0)`，与 `CAN_MERGE` 无关。
    **本项在 stripped 二进制上已接近静态分析上限**，建议改为批次 D
    实现期间用实测/打点确认，不再继续静态追。
 
