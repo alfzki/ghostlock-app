@@ -1,5 +1,28 @@
 # PROFILE-61258-01 真机门禁：6.12.58 fd_graph（direct）— FAIL
 
+> ## ⚠️ 归因已被更正（2026-10-03）
+>
+> 本文后文称「panic 任务 `T14586` 不是 GhostLock，本机 GhostLock 为 `T11660`」
+> 「17 秒后**无关进程**遍历被污染的 rt_mutex waiter 链」。**该结论错误**，
+> 且与本文自带的 pstore 证据冲突：
+>
+> - pstore 全文唯一的 `Comm:` 行为
+>   `PID: 14586 Comm: libghostlock.so` ⇒ **T14586 就是 GhostLock 线程**；
+> - `T11660` 在整份 pstore 中出现 **0 次**；
+> - 原推断很可能把主线程 TID（App 日志 `pid=11660`）与某个 **worker 线程 TID**
+>   当成了两个进程。GhostLock 多线程（waiter/owner/consumer/pipe_worker）
+>   各线程**同样名为 `libghostlock.so`**，且 oops 的 `PID:` 打印的是当前线程 TID。
+>
+> 另：pstore 中 `epoll|pipe_|anon_pipe` 匹配数为 **0**，崩溃栈 100% 位于
+> PI-futex 路径（`futex_lock_pi → rt_mutex_cleanup_proxy_lock → remove_waiter →
+> rt_mutex_adjust_prio_chain`）⇒ **与 `fd_graph` route 无关**。
+>
+> 完整更正见 **`docs/analysis/61258-panic-attribution-correction.md`**；
+> 独立复现见 `PROFILE-61258-02-20261003-batchA-panic-FAIL.md`
+> （批次 A 不写任何目标仍 `kernel_panic`）。
+>
+> 以下正文按档案原样保留，未改写。
+
 对应提交 `b2d0e6c`（`fix(profile): correct the 6.12.58 physical address pair and ungate it`）
 与 `2a245aa`（`fix(profile): write fd_graph geometry into the native document`）。
 候选二进制 `build/native/ghostlock` SHA-256
