@@ -196,11 +196,9 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
 
 ### 2.5.5 仍未确认（批次 D 的剩余前置）
 
-1. **`pipe_buffer` 槽位的回收与重占机制**：§2.5.4 确认了 fd 额度与图宽，
-   但「槽位被 free 后如何重占为受控对象」尚未取得指令级证据。
-   注意：日志里的 `pipe_redirect` 对应两个**独立**函数
-   （`0x21da88` 1748 字节、`0x232c20` 356 字节），均不在编排函数内，
-   是下一步的首要目标。
+1. ~~**`pipe_buffer` 槽位的回收与重占机制**~~ → **回收手段已确认**（见 §2.7）。
+   剩余未确认：重占为受控对象后的**具体布局**（`fake_count` / `fake_fllink`
+   的落点），以及 `EPOLL_CTL_DEL` 在其中的确切角色。
 2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
    `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
    需 BTF 或真机读回交叉验证（批次 B 的前置）。
@@ -263,6 +261,44 @@ struct pipe_buffer {
 
 结论：**main 分支源码不能替代 6.12.58 的真实布局**（字段增删会移动偏移）。
 这 4 个偏移必须来自 6.12.58 的 BTF 或真机读回，批次 B 在拿到之前不得填值。
+
+### 2.7 指令级：回收手段 = `F_SETPIPE_SZ` 缩放管环（批次 C 收尾）
+
+在编排函数内（`0x220fa4`–`0x220fec`）定位到管环重设并**回读校验**：
+
+```
+220fa4: lsl  w22, w19, #12      ; 页数 → 字节（PAGE_SHIFT=12）
+220fac: bl   0x225e8c           ; 取锁
+220fb8: mov  w1, #0x407         ; 1031 = F_SETPIPE_SZ
+220fbc: ldr  w0, [x24]          ; fd = *arg0
+220fc0: mov  w2, w22            ; 字节数
+220fc4: bl   0x228168           ; fcntl 包装
+220fd0: mov  w1, #0x408         ; 1032 = F_GETPIPE_SZ
+220fe0: bl   0x228168           ; fcntl 包装
+220fe4: tbnz w24, #0x1f         ; SETPIPE_SZ 返回值错误检查
+220fe8: cmp  w0, w22            ; GETPIPE_SZ == 请求值？
+220fec: b.ne 0x221054           ; 不符则失败退出
+```
+
+这正是日志事件 `resize_sample`。
+
+**常量核对**（NDK `asm-generic/fcntl.h`）：`F_LINUX_SPECIFIC_BASE = 1024`，
+`F_SETPIPE_SZ = 1024+7 = 1031 = 0x407`，`F_GETPIPE_SZ = 1032 = 0x408` —— 与指令一致。
+
+**两个过程中纠正的自身错误**（记录以免重犯）：
+
+1. 最初只 grep `cmp w?, #0x407` 得到 0 命中，据此**错误地**断定 `F_SETPIPE_SZ`
+   未被使用。实际形式是 `mov w1, #0x407`（把 cmd 装入 w1 后再调包装函数），
+   不是 `cmp` 立即数。**结论被推翻。**
+2. 唯一的 `fcntl` thunk 调用点 `0x228228` 处 `cmp w19, #0x406`
+   ——`0x406 = 1030 = F_GETOWN`，属于通用 fd 管理包装（另有 `#0x2 = F_SETFD`、
+   `w19==0 = F_GETFD` 分支），**与管环无关**。
+
+**机制判读（推断，非指令级）**：`F_SETPIPE_SZ` 下探到 `pipe_resize_ring()`，
+缩容时会 `realloc`/释放旧的 `pipe->bufs` 数组 —— 旧管环数组被释放即产生
+`pipe_buffer` 槽位的 UAF 窗口，随后该内存被重占为受控对象。
+这解释了为何必须做 `GETPIPE_SZ` 回读：**缩放未生效则整条回收路径作废**，
+故它是必要条件而非可选的确认动作。
 
 ## 3. 真实机制（综合 §2）
 
