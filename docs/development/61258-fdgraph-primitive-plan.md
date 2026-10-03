@@ -70,13 +70,18 @@
    1×`EPOLL_CTL_DEL(event=NULL)` 摘链（即 `decoy_unlink`）。
 2. ~~单次 `write` 的目标 fd~~ → **已确认**（§2.5.2）：`write(fd_table[4], buf, count)`，
    是**普通 fd**；且由命令字驱动（`read(fd,&c,1)`，`c=='W'` 才写）。
-3. **仍未确认**：`pipe_buffer` 槽位如何被回收并重占为受控对象，
-   以及 `EPOLL_CTL_DEL` 在其中的确切角色。
+3. **部分确认**（§2.5.4）：编排函数含 `getrlimit`×6 / `setrlimit`×4
+   → 抬 `RLIMIT_NOFILE` 取得 fd 额度；配合日志里的 `fds=1964` / `fds=1005`，
+   说明「fd graph」是**批量开 fd（千级）+ 注册进 epoll** 形成的宽图，
+   7 次 `epoll_ctl` 只是收尾结构操作。
+   **仍未确认**：`pipe_buffer` 槽位 free 后如何**重占**为受控对象；
+   `pipe_redirect` 对应的两个独立函数（`0x21da88`、`0x232c20`）是下一步首要目标。
 4. **仍未确认**：`gen`/`refs`/`depth`/`refcount` 四个偏移在 6.12.58 上的真值
    （`preload.so` 串里的值是通用值，需 BTF 或真机读回交叉验证 —— 批次 B 的前置）。
+5. **仍未确认**：`pipe_buffer.flags`(0x18) 上 bit4(`0x10`) 的写入点。
 
 **批次 D 的设计约束已明确**：写入目标是普通 fd + 命令字驱动，
-不涉及把内核地址当 fd。
+不涉及把内核地址当 fd；建图需先扩 `RLIMIT_NOFILE` 并批量开 fd。
 
 ### 批次 D：实现回收 + 受控写入
 

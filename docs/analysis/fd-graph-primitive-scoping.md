@@ -173,11 +173,38 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
 → `cmp x8,x22` → `yield` → 回跳。即按计算出的时间窗自旋，构成 `delay_us` 扫描的
 等待点（与 §2.2 的 `delay_us` 命中档位对应）。
 
-### 2.5.4 仍未确认
+### 2.5.4 编排函数的完整 syscall 清单（参数级，arm64 号取自 NDK 头）
 
-`gen`/`refs`/`depth`/`refcount` 四个偏移在 **6.12.58 上的真值**。
-`preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是**通用值**，需 BTF 或真机读回交叉验证
-（批次 B 的前置）。
+| syscall | 次数 | 判读 |
+|---|---|---|
+| `getrlimit`(163) / `setrlimit`(164) | 6 / 4 | **抬 `RLIMIT_NOFILE`**，为建图取得 fd 额度 |
+| `epoll_ctl`(21) | 7 | 图的最终结构（§2.5.1） |
+| `read`(63) / `write`(64) | 2 / 1 | 命令字 + payload（§2.5.2） |
+| `pread64`(67) | 1 | 定位读 |
+| `sched_setaffinity`(122) | 4 | CPU 绑核（对应 `late_refs{cpu_pin,affinity}`） |
+| `setsockopt`(208) / `getsockopt`(209) | 1 / 3 | skb 几何（`skb_geometry`、`mcast_sources=14`） |
+| `munmap`(215) / `mmap`(222) | 1 / 1 | 缓冲映射 |
+| `setpgid`(154) / `kill`(129) | 1 / 1 | 线程组管理 |
+
+**关键推论：fd 数量级远大于 7。** `preload.so` 自身日志报
+`phase=collision_shape fds=1964`、`fds=1005`，即进程内 fd 达千级；
+配合 `getrlimit`/`setrlimit` 各 4–6 次，说明「fd graph」是**先扩额度、批量开 fd、
+再注册进 epoll** 形成的宽图，§2.5.1 的 7 次 `epoll_ctl` 是收尾的结构操作，
+而非全部注册量。
+
+`collision_shape pre=24 post=25` 度量的是**碰撞计数**恰好 +1，与 fd 总数是不同量。
+
+### 2.5.5 仍未确认（批次 D 的剩余前置）
+
+1. **`pipe_buffer` 槽位的回收与重占机制**：§2.5.4 确认了 fd 额度与图宽，
+   但「槽位被 free 后如何重占为受控对象」尚未取得指令级证据。
+   注意：日志里的 `pipe_redirect` 对应两个**独立**函数
+   （`0x21da88` 1748 字节、`0x232c20` 356 字节），均不在编排函数内，
+   是下一步的首要目标。
+2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
+   `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
+   需 BTF 或真机读回交叉验证（批次 B 的前置）。
+3. `0x10`（bit4）在 `pipe_buffer.flags`(0x18) 上的写入点尚未定位。
 
 ## 3. 真实机制（综合 §2）
 
