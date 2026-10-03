@@ -308,7 +308,19 @@ flowchart TD
 
 ### 下一步需要用户做的事
 
+0. 先把 rustup 放到 `PATH` 前面，否则 APK 构建会用 Fedora 的 `/usr/bin/cargo`
+   （只有 host target），报 `error[E0463]: can't find crate for 'std'`：
+
+   ```sh
+   export PATH="$HOME/.cargo/bin:$PATH"   # 仓库根目录下执行
+   export NDK_ROOT=/home/alfzki/Android/Sdk/ndk/27.0.12077973
+   ```
+
+   `aarch64-linux-android` target 已装好；缺的是 `PATH` 顺序，`build.gradle.kts` 的
+   `resolveCargoExecutable()` 取 `PATH` 里第一个 `cargo`。
+
 1. `./gradlew :app:assembleDebug` 后安装到设备
+   （产物在 `build/app/outputs/apk/debug/`，注意不是默认的 `build/outputs`）
 2. 冷机、固定 CPU 对、确认 KernelSU 未加载，再运行
 3. 取 `Download/ghostlock-debug-log/<时间>/*.log.txt`，重点看 W1 是否完成、`selinux` 是否 permissive、有无 panic
 4. 无论成败都按门禁模板归档；失败同样要记录（postmortem 口径）
