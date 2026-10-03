@@ -199,6 +199,19 @@ python3 tools/cmp_disasm.py <基线> build/native/ghostlock   # 建立并归档�
 冷机 → 固定 CPU 对 → 确认 KernelSU 未加载 → 运行 → 取
 `Download/ghostlock-debug-log/<时间>/*.log.txt`。
 
+主机侧已核对的门禁前置条件：
+
+- 设备匹配按 `uname -r` **精确字符串**比对（`BuiltinProfileCatalog.unames`，`-template`
+  条目会被排除）。设备必须报出 `6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k`，
+  否则 app 显示 unsupported，Run 不会出现。
+- 本 profile `recommend_shizuku = 0`，不需要 Shizuku。
+- APK 已签名（Android Debug 证书），`arm64-v8a` 的 `libghostlock.so` / `libextract.so`、
+  `index.conf` 与本 profile 均在包内。
+- 包内 `libghostlock.so` 与当前 `build/native/ghostlock` 重新 `llvm-strip` 后**逐字节相同**
+  （体积/哈希差异来自 `build.gradle.kts` 里刻意只对打包副本 strip）。
+- 导出的 GLK1 `.bin` 里 `kernel_phys_load` 与 `kernel_phys_offset` 都是 `0x80000000`，
+  即批次 1b 的修正值确实到达 native 实际读取的字节。
+
 判定：W1 是否完成、`selinux` 是否 permissive、有无 `kernel_panic`。
 **失败与成功同等归档**，按 `docs/development/documentation-standards.md` 的门禁记录模板写。
 
