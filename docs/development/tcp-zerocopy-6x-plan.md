@@ -192,8 +192,15 @@ kallsyms；且 `copy_to_user` 作为 `EXPORT_SYMBOL` 符号**同样缺失**，�
 不属于该路由唯一支持的家族**。把它写成 `1` 可以让 app 校验与
 `ProfileMigrationEquivalenceTest` 同时变绿，但代价是让路由按 compact
 偏移向 non-compact waiter 写入 `task`/`lock` —— 写坏内核对象，
-正是三次 panic 的成因类别。故 profile 保持 `select_stack`
-（`waiter_shift = 0`），6.12.58 的 W1 判定为**当前不支持**。
+正是三次 panic 的成因类别。
+
+本节撰写时该 profile 为 `select_stack { waiter_shift = 0 }`，据此判定 6.12.58
+的 W1「当前不支持」。**该配置已于 `aed09ad` 改为 `route.fd_graph`**（新增的
+第四条 middleware），因此 profile 现在不再有 `select_stack` 块，也无
+`compact_waiter`。**「select_stack 在 6.12.58 不可行」这一结论不受影响**
+（依据见上节与 `:379-385` 的外部佐证），只是「profile 保持 select_stack」
+的表述已过时。6.12.58 当前路线见
+`docs/development/61258-fdgraph-primitive-plan.md`。
 
 结论：`compact_waiter` 对 tcp 路由而言是**家族标记**而非运行期开关；
 Kotlin 侧 `compact_waiter` 必填非零的校验（`AndroidProfileConfigController.kt:145`）

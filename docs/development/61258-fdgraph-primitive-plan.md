@@ -221,7 +221,11 @@ make -C src lint-tidy          # 0 findings
 - **归因限制**：`KERNEL-PANIC-01` 允许同构建 PASS/panic/PASS；
   判定因果要求同构建复现 + 冷启动复跑，不得凭单次结果。
 - **停止条件**：
-  - 批次 C 未能把 §2.3 推断升级为指令级事实 → 不进批次 D。
+  - 批次 C 的三项遗留（scoping §2.5.5：`pipe_buffer` 槽位重占机制、
+    `gen`/`refs`/`depth`/`refcount` 真值、bit4 写入点）未取得指令级证据
+    → 不进批次 D。**其中第二项需 BTF/真机读回**，当前设备为 production build
+    （`adb root` 不可用、`/sys/kernel/btf/vmlinux` 拒绝读取），工作区亦无
+    `boot.img`/`vmlinux`/BTF，故**批次 B 在拿到 BTF 前不得填值**。
   - 批次 A 后真机仍 panic 且 `chain_hits` 仍为 0 → 说明破坏源不在无效写入，
     需回到批次 C 重新定位，不得继续叠加机制。
   - `cmp_disasm` 出现无法解释的攻击函数差异 → 停止并调查。
@@ -230,5 +234,15 @@ make -C src lint-tidy          # 0 findings
 
 ## 7. 评审要点
 
-请确认：① 批次顺序（A 先做对照）是否认可；② 批次 B 的 4 个新字段是否纳入本轮
-（属 wire 格式变更，影响面大于 route 本身）；③ 是否同意批次 C 完成后再次评审再进 D。
+批次 C（只读分析）已完成大部分，结论见 scoping §2.4/§2.5/§2.6。请确认：
+
+1. **批次顺序**：A（移除无效与错误代码，低风险对照）→ B（几何扩展，依赖 BTF）
+   → D（实现投递）→ E（独立验证）→ F（冷启动门禁）。是否认可先做 A？
+2. **批次 B 的 4 个新字段**（`gen`/`refs`/`depth`/`refcount`）属 wire/profile
+   格式变更，影响面大于 route 本身；且**当前无法验证取值**。是否接受
+   「拿到 BTF 后再做」，还是希望本轮先只做 A？
+3. **投递机制的设计前提**：batch D 是移植 `preload.so` 已验证的投递路径，
+   落点沿用已验证的 waiter 常量（§1.2）。是否同意「先完成批次 C 遗留的
+   `pipe_buffer` 槽位重占机制取证，再评审批次 D」？
+4. **BTF 来源**：需要 6.12.58 的 `boot.img`（或可读 BTF 的设备）。
+   当前 production 设备无法读取，是否可提供 boot.img？
