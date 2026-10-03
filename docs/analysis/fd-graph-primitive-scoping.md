@@ -200,9 +200,13 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
    `F_SETPIPE_SZ` 8K/128K 两级缩放 + `F_GETPIPE_SZ` 回读，失败即 `exit(-1)`），
    **`fake_fllink` 构造已确认**（§2.8：`base | 0x108` = `LIST_POISON1 + 8`），
    **投递链已确认**（§2.9：240 路 `write` 喷洒 + `pread64` 回读；
-   §2.10：240 根管道由 fd 表 `malloc(0x780)` 建立，空槽初值 `-1`）。
-   剩余未确认：`fake_count` 的落点、`EPOLL_CTL_DEL` 在其中的确切角色、
-   `+8` 偏移量的选取依据，以及槽位被重占为受控对象后的具体布局。
+   §2.10：240 根管道由 fd 表 `malloc(0x780)` 建立，空槽初值 `-1`），
+   **`fake_count` 含义已确定**（§2.11：`0x10` = 16，即受控对象喷洒个数，
+   **不是**此前猜测的「计数/引用计数」；同时 profile 的
+   `objects_per_order3` / `pipe_object` / `pipe_flags` 三项由成功样本直接印证）。
+   剩余未确认：`EPOLL_CTL_DEL` 在其中的确切角色、`+8` 偏移量的选取依据，
+   受控对象内 `+0x1780` / `+0x1788` 两处写入对应的具体字段，
+   以及槽位被重占后的完整布局。
 2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
    `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
    需 BTF 或真机读回交叉验证（批次 B 的前置）。
@@ -523,6 +527,58 @@ for (uint32_t i = 0; i < 0xf0; i++) { reclaim_slots[i] = 0; }   /* ← 应为 fd
 `FUN_00228168` 包装，§2.7）。`malloc` / `memset` / 建管道三者
 （`0x25a670` / `0x2580f4` / `0x235e44`）**无裸 `mov x8`**，属 libc 级包装，
 其角色由调用形态推断（尺寸/填充值/槽指针），非指令级确证。
+
+### 2.11 受控对象喷洒与 `PIPE_TARGET`（profile 常量由此确认）
+
+`annotated.c:4900` 起的函数里，喷洒循环与随后的日志为：
+
+```c
+lVar32 = param_2 + 0x100;
+lVar27 = -0x800;
+do {
+  lVar3 = 0;
+  if (lVar27 != -0x80) { lVar3 = uVar30 + lVar27 + 0x988; }
+  lVar20 = FUN_0022058c();
+  *(long *)(lVar20 + lVar27 + 0x1780) = lVar32;      /* 高项 */
+  lVar20 = FUN_0022058c();
+  lVar32 = lVar32 + 0x800;                            /* 步长 = object_size */
+  lVar20 = lVar20 + lVar27;
+  lVar27 = lVar27 + 0x80;                             /* −0x800 → 0，步长 0x80 */
+  *(long *)(lVar20 + 0x1788) = lVar3;                 /* 低项 */
+} while (lVar27 != 0);
+FUN_0024094c(
+    "PIPE_TARGET page=0x%016llx fake_count=%d object_size=0x%x slot=%d flags_off=0x%x\n"
+    , param_2, 0x10, 0x800, 10, 0x18);
+```
+
+**渲染约定复核**：`0x` 前缀为十六进制、裸数为十进制（§2.7.1 已记）。
+故上式实参为：`fake_count = 0x10 = 16`、`object_size = 0x800 = 2048`、
+`slot = 10`（十进制）、`flags_off = 0x18 = 24`。
+
+**这是 §2.8 中「疑为受控对象数组铺设、仅作线索记录」那条线索的确认**：
+
+| 量 | 指令级/反编译所得 | profile | 结论 |
+|---|---|---|---|
+| 喷洒个数 | `lVar27: −0x800 → 0`，步长 `0x80` ⇒ **16 次** | `objects_per_order3 = 16` | **一致** |
+| 对象步长 | `lVar32 += 0x800` ⇒ **2048** | `pipe_object = 2048` | **一致** |
+| 标志偏移 | 日志实参 `flags_off = 0x18` ⇒ **24** | `pipe_flags = 24` | **一致** |
+| 活跃槽 | 日志实参 `slot = 10`（十进制） | 无对应字段 | 新增信息 |
+| `fake_count` | **`0x10` = 16**，与喷洒个数相同 | `objects_per_order3 = 16` | `fake_count` 即受控对象数 |
+
+要点：
+
+1. **`fake_count` 的含义已确定**：它就是**喷洒的受控对象数量**（16），
+   不是 §2.5.5 曾猜测的「计数/引用计数」。此处更正该猜测。
+2. **profile 的三个常量由成功样本直接印证**
+   （`objects_per_order3` / `pipe_object` / `pipe_flags`），说明
+   §2.6 只差 `gen`/`refs`/`depth`/`refcount` 四项未验证。
+3. 每个对象写入两处：`+0x1780`（值 = `page + 0x100`，逐个 `+0x800`）与
+   `+0x1788`（值 = `uVar30 + lVar27 + 0x988`，首项为 0）。
+   **这两个偏移落在 `0x800` 对象的什么字段仍未确认**（需按 `epitem`/`pipe_buffer`
+   布局核对），列为批次 D 实测项。
+4. `lVar27` 首项为 `-0x800` 时 `lVar3` 被置 0（`if (lVar27 != -0x80)` 特判），
+   即**第 0 号对象的低项为 0**，其余为 `uVar30 + 偏移`。该特判的实际用意
+   未确认，不建议臆测。
 
 ## 3. 真实机制（综合 §2）
 
