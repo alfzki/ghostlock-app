@@ -365,6 +365,8 @@ void FUN_00220f7c(undefined4 *param_1, undefined8 param_2, ...) {
 
 > **反编译产物已可用**：批次 D 取证不必再依赖裸反汇编 ——
 > `../decompiled/annotated.c` 提供带函数边界与 Ghidra 建议名的可读 C。
+> **但它是同一程序的另一构建，不是 `preload.so` 本身**（MD5 核对见 §2.13），
+> 凡引用其取值须回到 `preload.so` 反汇编复核。
 > 注意其数值渲染约定：**裸数为十进制**（`= 10;` 即 0xa），
 > `0x` 前缀才是十六进制。误按十六进制读会把 `10` 当成 `CAN_MERGE`(0x10)。
 >
