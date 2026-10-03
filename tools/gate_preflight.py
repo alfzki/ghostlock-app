@@ -40,7 +40,6 @@ This tool never writes to the device; it only reads.
 from __future__ import annotations
 
 import argparse
-import re
 import shutil
 import subprocess
 import sys
@@ -161,24 +160,43 @@ def check_release(serial: str, expected: str) -> Result:
 
 
 def check_nofile(serial: str) -> Result:
-    """Report RLIMIT_NOFILE headroom for the 24576-descriptor fd graph."""
-    code, out = run_adb(serial, "shell", "sh", "-c", "ulimit -n")
+    """Report RLIMIT_NOFILE headroom for the 24576-descriptor fd graph.
+
+    Reads /proc/self/limits, not `ulimit -n`: adb re-splits the argv so
+    `shell sh -c "ulimit -n"` arrives as `sh -c ulimit -n`, printing "unlimited".
+    Verified on device. /proc/self/limits also exposes the hard limit.
+    """
+    code, out = run_adb(serial, "shell", "cat", "/proc/self/limits")
     if code != 0 or not out:
         return Result(
-            "nofile", "SKIP", f"could not read ulimit -n: {out or 'no output'}"
+            "nofile", "SKIP", f"could not read /proc/self/limits: {out or 'no output'}"
         )
-    match = re.search(r"\d+", out)
-    if match is None:
-        return Result("nofile", "SKIP", f"unparsable ulimit -n: {out!r}")
-    soft = int(match.group(0))
-    detail = f"RLIMIT_NOFILE soft={soft}, fd graph needs +{GRAPH_FD_HEADROOM}"
-    if soft < GRAPH_FD_HEADROOM:
-        return Result(
-            "nofile",
-            "FAIL",
-            f"{detail}; raise before gating or the graph hits EMFILE mid-build",
-        )
-    return Result("nofile", "PASS", detail)
+    for line in out.splitlines():
+        if "open files" not in line:
+            continue
+        parts = line.split()
+        # "Max open files <soft> <hard> files"
+        if len(parts) < 4:
+            return Result("nofile", "SKIP", f"unparsable limits line: {line.strip()!r}")
+        soft_s, hard_s = parts[3], parts[4] if len(parts) > 4 else "?"
+        detail = f"RLIMIT_NOFILE soft={soft_s} hard={hard_s}, fd graph needs +{GRAPH_FD_HEADROOM}"
+        if not soft_s.isdigit():
+            return Result(
+                "nofile", "FAIL", f"{detail}; soft limit is not a number, cannot gate"
+            )
+        soft = int(soft_s)
+        if soft < GRAPH_FD_HEADROOM:
+            return Result(
+                "nofile",
+                "FAIL",
+                f"{detail}; raise before gating or the graph hits EMFILE mid-build",
+            )
+        if hard_s.isdigit() and soft > int(hard_s):
+            return Result(
+                "nofile", "FAIL", f"{detail}; soft limit exceeds the hard limit"
+            )
+        return Result("nofile", "PASS", detail)
+    return Result("nofile", "SKIP", "no 'open files' row in /proc/self/limits")
 
 
 def main(argv: list[str] | None = None) -> int:
