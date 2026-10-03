@@ -83,10 +83,20 @@ target → environment → carrier_preflight → carrier_patch → patch
   → redirect{spawn,complete} → selinux_zero{begin,attempt} → root_proof{matrix}
 ```
 
-### 2.3 推断（尚需反汇编确认）
+### 2.3 机制推断（已由 §2.4 / §2.5 大部分落实）
 
-回收 `pipe_buffer` 槽位 → 使其指向**受控页**（`preset_direct_map`）→
-`pipe_worker` 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_page`。
+原始推断：回收 `pipe_buffer` 槽位 → 使其指向**受控页**（`preset_direct_map`）→
+worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_page`。
+
+§2.5 修正了两点：
+
+1. 写入目标是 **`fd_table[4]`（普通 fd）**，不是内核地址；受控页是经该 fd 背后的
+   被回收 `pipe_buffer` 槽位间接到达的。
+2. 触发写入的是**命令字驱动**（worker `read` 1 字节，`== 'W'` 才写），
+   而非无条件写。
+
+仍属推断的部分：`pipe_buffer` 槽位如何被回收并重占为受控对象，
+以及 `EPOLL_CTL_DEL` 在其中扮演的确切角色。
 
 ### 2.4 指令级：写入函数的 syscall 清单（批次 C 结论）
 
@@ -111,9 +121,63 @@ target → environment → carrier_preflight → carrier_patch → patch
 3. **原语是 epoll fd 图**：7 次 `epoll_ctl` 对应 CVE-2026-43499 的
    `epitem.fllink` 链操纵，与 profile 的 `epitem_ep=0x48`/`epitem_fllink=0x50` 吻合。
 
-> 尚未确认（需批次 C 续做）：7 次 `epoll_ctl` 的具体参数序列，
-> 以及 `write` 的目标 fd 如何指向被回收的 `pipe_buffer` 槽位。
-> 这两点决定批次 D 的实现细节。
+> **参数级已确认**（见 §2.5）：7 次 `epoll_ctl` = 6×`EPOLL_CTL_ADD` + 1×`EPOLL_CTL_DEL`；
+> payload 由**单次 `write(fd_table[4], …)`** 投递，fd 来自被追踪的 fd 表。
+
+### 2.5 指令级：参数序列（批次 C 续做结论）
+
+### 2.5.1 7 次 `epoll_ctl` —— 建图 + 摘链
+
+| 地址 | `op`(x1) | `fd`(x2) | `event`(x3) | 判读 |
+|---|---|---|---|---|
+| `0x22167c` | `1` ADD | `w19` | `sp+0x300` | 加入第 1 个 epoll 实例 |
+| `0x2216c8` | `1` ADD | `w22` | `sp+0x300` | 加入第 2 个 |
+| `0x221988` | `1` ADD | `w28` | `x29-0x30` | 加入第 3 个 |
+| `0x2219b4` | `1` ADD | `w28` | `x29-0x30` | 加入第 4 个 |
+| `0x2219dc` | `1` ADD | `w27` | `x29-0x30` | 加入第 5 个（`epfd=array[x23[i]]` 循环） |
+| `0x221acc` | **`2` DEL** | `w28` | **`xzr`(NULL)** | **摘链** —— 即 `decoy_unlink` |
+| `0x222600` | `1` ADD | `w19`/`w2` | `sp` | 收尾补入 |
+
+- `epfd` 取自 `ldr w0,[x23, x22, lsl #2]`（`0x2219c4`）：**同一个目标 fd 被注册进多个
+  epoll 实例**，从而在 `epitem.fllink` 上拉出宽图 —— 这就是「fd graph」与
+  CVE-2026-43499 原语。
+- `EPOLL_CTL_DEL` 传 `event=NULL` 是合法用法（等价 `EPOLL_CTL_MOD` 的删除语义），
+  对应解绑等待者。
+- `mov w0, #0x80000`（`0x80000` = `EPOLL_CLOEXEC`）后 `bl 0x23c754` → `epoll_create1`。
+
+### 2.5.2 payload 写入是「命令驱动」的
+
+```
+0x220b78: add  x1, sp, #0x64      ; buf
+0x220b7c: mov  w0, w19            ; fd
+0x220b80: mov  w2, #0x1           ; count = 1
+0x220b84: bl   read               ; read(fd, &sp[0x64], 1)
+0x220ba8: ldrb w8, [sp, #0x64]
+0x220bac: cmp  w8, #0x57          ; 0x57 = 'W'   ← 命令字
+0x220bb0: b.ne <skip>
+0x220bbc: ldr  x8, [x20, #0x3a8]  ; fd 表基址
+0x220bb8: mov  w19, #0x4          ; slot = 4
+0x220bc8: ldr  w0, [x8, x19]      ; fd = fd_table[4]
+0x220bcc: bl   write              ; write(fd_table[4], buf, count)
+```
+
+- worker 先 `read` **1 字节命令**，仅当该字节 `== 'W'(0x57)` 才执行写入。
+- 写入目标是 `fd_table[4]`（`w19=4`），即日志串
+  `count=%zu vmsplice_pages=%d file_slot=%d target_offset=%lld fds=%d` 中的 **`file_slot=4`**。
+- **写入目标是普通 fd，不是内核地址。** 这从参数层面彻底否证了 stub 的
+  「内核地址当 fd」写法。
+
+### 2.5.3 时序等待
+
+`0x221aa0`–`0x221ab8` 为自旋等待：`ldp x8,x9,[x29,-0x30]` → `madd x8,x8,x24,x9`
+→ `cmp x8,x22` → `yield` → 回跳。即按计算出的时间窗自旋，构成 `delay_us` 扫描的
+等待点（与 §2.2 的 `delay_us` 命中档位对应）。
+
+### 2.5.4 仍未确认
+
+`gen`/`refs`/`depth`/`refcount` 四个偏移在 **6.12.58 上的真值**。
+`preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是**通用值**，需 BTF 或真机读回交叉验证
+（批次 B 的前置）。
 
 ## 3. 真实机制（综合 §2）
 

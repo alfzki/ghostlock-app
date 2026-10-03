@@ -63,12 +63,20 @@
 **`splice`/`vmsplice`/`tee` 各 0 次**。故：原语是 **epoll fd 图**
 （7 次 `epoll_ctl` 操纵 `epitem.fllink`），payload 经**单次 `write`** 投递。
 
-**待确认**（批次 D 的实现依赖，故 D 暂不启动）：
+**待确认**：
 
-1. 7 次 `epoll_ctl` 的具体参数序列（如何建图、何时改 `fllink`）。
-2. 单次 `write` 的目标 fd 如何指向被回收的 `pipe_buffer` 槽位。
-3. `gen`/`refs`/`depth`/`refcount` 四个偏移在 6.12.58 上的真值
+1. ~~7 次 `epoll_ctl` 的参数序列~~ → **已确认**（scoping §2.5.1）：6×`EPOLL_CTL_ADD`
+   把同一目标 fd 注册进多个 epoll 实例以拉出 `epitem.fllink` 宽图，
+   1×`EPOLL_CTL_DEL(event=NULL)` 摘链（即 `decoy_unlink`）。
+2. ~~单次 `write` 的目标 fd~~ → **已确认**（§2.5.2）：`write(fd_table[4], buf, count)`，
+   是**普通 fd**；且由命令字驱动（`read(fd,&c,1)`，`c=='W'` 才写）。
+3. **仍未确认**：`pipe_buffer` 槽位如何被回收并重占为受控对象，
+   以及 `EPOLL_CTL_DEL` 在其中的确切角色。
+4. **仍未确认**：`gen`/`refs`/`depth`/`refcount` 四个偏移在 6.12.58 上的真值
    （`preload.so` 串里的值是通用值，需 BTF 或真机读回交叉验证 —— 批次 B 的前置）。
+
+**批次 D 的设计约束已明确**：写入目标是普通 fd + 命令字驱动，
+不涉及把内核地址当 fd。
 
 ### 批次 D：实现回收 + 受控写入
 
