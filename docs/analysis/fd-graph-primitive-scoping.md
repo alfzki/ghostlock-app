@@ -307,6 +307,48 @@ struct pipe_buffer {
 这解释了为何必须做 `GETPIPE_SZ` 回读：**缩放未生效则整条回收路径作废**，
 故它是必要条件而非可选的确认动作。
 
+#### 2.7.1 反编译 C 证实：`worker_pool` 的完整语义（`decompiled/annotated.c:4826`–`4866`）
+
+工作区存在 `preload.so` 的 **Ghidra 反编译产物**
+（`../decompiled/annotated.c`，`pd2502_mt6993_full_2f55ad9c.so`，1051 个函数全恢复，
+镜像基址 `0x200000`、入口 `0x21a780`，与本节反汇编同一二进制）。
+该函数可读形式为：
+
+```c
+/* >>> SUGGESTED NAME: worker_pool   [rule] */
+void FUN_00220f7c(undefined4 *param_1, undefined8 param_2, ...) {
+  iVar2 = (int)param_2 * 0x1000;                      /* slots << 12 → 字节 */
+  puVar5 = FUN_00225e8c(); *puVar5 = 0;
+  iVar3 = FUN_00228168(*param_1, 0x407, iVar2);        /* fcntl(fd, F_SETPIPE_SZ, bytes) */
+  uVar1 = *puVar5;  *puVar5 = 0;
+  iVar4 = FUN_00228168(*param_1, 0x408);              /* fcntl(fd, F_GETPIPE_SZ) */
+  if ((-1 < iVar3) && (iVar4 == iVar2)) {              /* 成功：无错 且 观测值==请求值 */
+    if (param_4 != 0) { return; }
+    FUN_0021d2f8("pipe_worker","resize_sample",
+                 "phase=%s index=0 slots=%zu set_result=%d observed=%d", ...);
+    return;
+  }
+  FUN_0021d2f8("pipe_worker","resize_fail", ...);      /* 失败：先记日志 */
+  *puVar5 = uVar1;
+  FUN_0024094c(...);                                   /* WARNING: 不返回 */
+  FUN_00227e40(0xffffffff);                            /* exit(-1) */
+}
+```
+
+比反汇编多出的三点关键语义：
+
+1. **成功判据是「无错 **且** `observed == requested`」**，不是「无错」。
+   仅 `F_SETPIPE_SZ` 返回成功不足以继续。
+2. **失败是致命的**：记 `resize_fail` 后直接 `exit(-1)`，**不重试、不降级**。
+   因此批次 D 必须在投递前处理缩放失败，不能在失败后重入。
+3. **该函数属 `pipe_worker` 阶段**（日志 tag `"pipe_worker"`），而非我先前
+   按地址推断的「编排函数内」。`resize_sample` 事件由此定位到 worker 侧。
+
+> **反编译产物已可用**：批次 D 取证不必再依赖裸反汇编 ——
+> `../decompiled/annotated.c` 提供带函数边界与 Ghidra 建议名的可读 C。
+> 注意其数值渲染约定：**裸数为十进制**（`= 10;` 即 0xa），
+> `0x` 前缀才是十六进制。误按十六进制读会把 `10` 当成 `CAN_MERGE`(0x10)。
+
 ### 2.8 指令级：`fake_fllink` 的构造（`LIST_POISON1 + 8`）
 
 `KNOWN_PAGE` 日志点（`0x221560`–`0x221574`）前一行即构造：
