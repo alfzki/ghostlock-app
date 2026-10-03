@@ -210,9 +210,12 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
 2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
    `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
    需 BTF 或真机读回交叉验证（批次 B 的前置）。
-3. **bit4 的含义已确认为 `PIPE_BUF_FLAG_CAN_MERGE`**（见 §2.6），
-   但**其在 `pipe_buffer.flags` 上的写入点仍未定位**，
-   且**不要用「向 `[x?,#0x18]` 存值」来搜**：本次已验证该模式在本二进制中
+3. **bit4 的含义已确认为 `PIPE_BUF_FLAG_CAN_MERGE`**（见 §2.6）。
+   其在 `pipe_buffer.flags` 上的写入点在本节曾判定为「仍未定位」——
+   **但该问题已作废，见 §2.18.2：根本不需要定位写点**，参考实现是喷入后
+   **读回** `*(u8 *)(slot + 0x166)` 测 bit 4，故只需构造喷入数据使该位命中。
+   下列三个静态候选的证伪过程**仍然有效**（记录了 `0x18` 搜索为何不可用）。
+   **不要用「向 `[x?,#0x18]` 存值」来搜**：本次已验证该模式在本二进制中
    大量误命中——`0x224b40`–`0x224c38` 的七个 `str w?, [x27, #0x18]` 属于
    **HOCON/JSON 解析器的游标**（`ldrsw x8,[x27,#0x18]` → `add #8` → `str`，
    伴随对 `'l'/'h'/'o'/'c'/'m'/'p'/'s'/'u'/'d'/'i'/'%'` 的 ASCII 比较），
@@ -936,77 +939,137 @@ round=0 delay_us=0 generation=0x000000000001831d depth=1  mc=1 chain=1 bit4=1   
 4. **成功可能发生在第 0 轮**（第二次运行）⇒ 批次 D **必须是有界的重试循环**，
    不能假定首轮命中；单轮失败不代表机制无效。
 
-## 3. 真实机制（综合 §2）
+## 3. 真实机制（综合 §2，已按 §2.16–§2.19 更新）
+
+> **权威顺序**：§2.16（建图）→ §2.7/§2.10（回收）→ §2.11/§2.12（建表喷入）
+> → §2.8（植毒）→ §2.9（触发）→ §2.17.1（验证）。
+> 本节是摘要，细节以 §2 各小节为准。
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
    **来自 profile 预设**（`address_source=target_profile`），不在运行时验证
    （`runtime_address_verified=0 panic_possible=1` —— 明确接受 panic 风险）。
-2. **形状校验**：`phase=collision_shape pre=24 post=25`（碰撞计数恰好 +1）。
-3. **准备诱饵**：`late_refs{decoy_unlink, fd_preflight}` —— 先建诱饵对象再 unlink。
-4. **抢槽位**：`RECLAIM_HIT` 两模式，`generation`/`outer_depth`/`can_merge` 判定。
-5. **伪造链接**：`KNOWN_PAGE base=... fake_fllink=...`；`pipe_flags`（偏移 `0x18`）改写
-   即 `pipe_flags_redirect` / `pipe_flags_candidate`，日志里的 `bit4` 即 `pipe_flags` 的 bit4。
-6. **写入**：`pipe_worker` 的 `payload_writes` 打到 `controlled_page`
-   （`PROBE_TARGET controlled_page=... write_window=[lo,hi] depth_sentinel=0x%02x`）。
-7. **独立验证**（非自读回）：
-   `PROBE_READBACK ... generation=... refs=... depth=... refcount=... expected_written=%d pass=%d`
-   以及经 carrier 的 `carrier_readback`。
+   **已核对**：`preload.so` 成功日志的 `CHAIN_HIT … target=0xffffff80027c6960`
+   与本仓库 profile **逐字一致**（§2.19）。
+2. **抬 `RLIMIT_NOFILE`**（§2.14）：要求 `cur ≥ 当前占用 + 0x60a0 (24736)`，
+   不足则**致命退出**。**必须先于建图**，否则 `epoll_create1` 中途 `EMFILE`。
+3. **构建嵌套 epoll 图**（§2.16）：外层 `width=96` × 内层 `fanout=256`，
+   每轮 `epoll_create1(EPOLL_CLOEXEC)` 后用
+   `epoll_ctl(new, EPOLL_CTL_ADD, prev_fd, &ev)` 把**上一个 epoll 的 fd** 注册进去，
+   共 `24576` 个。形成宽 `epitem.fllink` 链。
+   日志 `GRAPH_READY width=96 fanout=256 edges=24576`。
+4. **准备诱饵 + 抬 fd 上限**（§2.14/§2.18.1）：`late_refs{decoy_unlink, fd_preflight}`；
+   `decoy_unlink` 的 `close_after_trigger=1` 是**硬顺序约束**。
+5. **回收管环**：240 根管道经 `F_SETPIPE_SZ` 两级缩放 + `F_GETPIPE_SZ` 回读（§2.7/§2.10）。
+   **这 240 是 `pipe_buffer` 回收表槽数，与第 3 步的 24576 是两个独立机制。**
+6. **建表 + 喷标记**（§2.11/§2.12/§2.19.1）：64 KiB 用户缓冲内构造
+   `fake_count=0x10`（16）项重定向表；向 `epitem.generation`（`0xa8`）喷
+   ASCII 标记 `0x304b52414d4e4547` = `"GENMARK0"`，约 68 份。
+   `marker_changed` = 该字段**是否已不再读回 `GENMARK0`**。
+7. **伪造链接**（§2.8）：`KNOWN_PAGE base=… fake_fllink=base|0x108`（`LIST_POISON1 + 8`）。
+   被投毒的 `epitem.fllink` 使内核遍历时的 `list_entry()` 落点偏移到受控对象 ——
+   **写入目标是普通 fd，内核自己解引用被植入的指针**。
+8. **`can_merge`：只需数据构造，无需定位写点**（§2.18.2）。
+   参考实现喷入后**读回** `*(u8 *)(slot + 0x166)` 测 bit 4；
+   故只需保证**偏移 `0x166` 的 bit 4 落在我们喷入的数据里**。
+   ⚠ 早前「改写 `pipe_flags`（`0x18`）」的表述**已作废** —— 那是 `pipe_buffer`
+   内字段偏移，与被回收槽内的 `0x166` 不是同一对象，不可混用。
+9. **触发**（§2.9/§2.18.2）：240 路 `write()`（命令字 `'W'` 门控，每次须返回全长）；
+   **有界重试**，`delay_us` 自 0 递增；**成功判据 = `chain_hit == 1` 且 `bit4 == 1`**
+   （`chain_hit` 单独为 1 **不算成功**）；**成功可在第 0 轮发生**（§2.19.2）。
+   `redirect` 以 **fork** 执行投递，父进程 240s 超时等待（§2.17）。
+10. **验证：读可观测后果**（§2.17.1）：读 **`/sys/fs/selinux/enforce`**，
+    首字节 `!= '1'` 即成功；失败重试一次。
+    ⚠ 早前「`PROBE_READBACK` + 经 carrier 回读」的表述**已作废** ——
+    自读回经由同一次写读回目标，**无法区分写到目标与写到邻居**，不构成验证。
+    批次 B 的 4 个哨兵**保留用于诊断**（参考 `RACE` 行确实打印
+    `generation` 与 `depth`），但**不是验收判据**。
 
 ## 4. 与 stub 的差距
 
-| 环节 | stub | `preload.so` |
+> 「stub」列描述**当前工作树**状态（批次 A/B 已落地：`7e84335` / `f71f37b`）。
+
+| 环节 | stub（现状） | `preload.so`（已确认） |
 |---|---|---|
-| 几何常量 | 仅 `pr_info` 打印（`fd_graph_route.cpp:150-155`） | 参与构造；且**另有 4 个 profile 缺失字段**（见 §5） |
-| 碰撞页 | `reinterpret_cast<uint64_t>(ks->collisions)`（计数当地址，仅日志） | `collision_shape pre/post` 校验 +1 |
-| 诱饵 | 无 | `decoy_unlink` + `fd_preflight` |
-| 抢槽 | 无 `active_slot` 选取 | `RECLAIM_HIT mode=pipe/zero` |
-| `fllink` | 无 | `fake_fllink = base \| 0x108`（§2.8，`LIST_POISON1 + 8`） |
-| `pipe_flags` | 无（只打印偏移 0x18） | `pipe_flags_redirect` 改写 bit4（`CAN_MERGE`，§2.6.1） |
+| 几何常量 | **已补齐** —— profile 带 16 字段，含批次 B 的 `epitem_gen`/`refs`/`depth`/`refcount`（§5） | `static_layout` 打印 12 项，参与构造 |
+| **抬 `RLIMIT_NOFILE`** | **完全没有** | 要求 `cur ≥ 当前 + 0x60a0 (24736)`，不足**致命退出**（§2.14） |
+| **嵌套 epoll 图** | **完全没有** | `width 96 × fanout 256 = 24576` 个嵌套 epoll（§2.16） |
+| 碰撞页 | 已修（`fd_graph_route.cpp:206-210`）：不再把 `size_t` **计数**当地址打印 | `collision_shape pre/post` 校验 +1 |
+| 诱饵 | **完全没有** | `decoy_unlink` + `fd_preflight`；`close_after_trigger=1`（§2.18.1） |
+| 抢槽 | **完全没有** | `RECLAIM_HIT mode=pipe/zero`，`generation`/`outer_depth`/`can_merge` |
+| `fllink` | **完全没有** | `fake_fllink = base \| 0x108`（§2.8，`LIST_POISON1 + 8`） |
+| **`can_merge`** | **完全没有** | 喷后**读回** `*(u8*)(slot + 0x166)` 测 bit 4；**无需定位写点**（§2.18.2） |
 | **fd 表** | `map_anonymous(0x780)` + `memset 0xff`，槽初值 **0** | `malloc(0x780)` + `memset 0xff`，槽初值 **`-1`**（空槽标记，§2.10） |
-| **建管道** | **完全没有** | 每槽一根，共 **240** 根（`FUN_00235e44`，§2.10） |
+| **建管道** | **完全没有** | 每槽一根，共 **240** 根（`FUN_00235e44`，§2.10）—— 与上面 24576 是**两个独立机制** |
 | **缩放管环** | **完全没有** | `F_SETPIPE_SZ` 8KiB/128KiB 两级 + `F_GETPIPE_SZ` 回读（§2.7） |
-| 写入 | `splice(..., static_cast<int>(target), ...)` ← 内核地址当 fd，必然 `EBADF` | **240 路 `write(fd_table[i], payload, len)`**，每次须返回全长；命令字 `'W'` 门控（§2.9） |
-| 回读 | 无 | `pread64` **按槽位偏移**校验 + `PIPE_OBSERVED`（§2.9） |
-| 时序 | **已有**扫描 `{0,1,2,4,8,12,20,32,48,64}`（`fd_graph_route.cpp:248`），但每个 delay 只试 1 次 | 同序列，且每档多次重试 + `tries`/`duration` 统计 |
-| 计数 | `reclaim_hits++` 在 `sp==8` 判断**之外**（`:277`），实际统计的是「vmsplice 返回 8」，与 `preload.so` 的 `RECLAIM_HIT` 语义不同名 | `RECLAIM_HIT` 记录 `generation`/`outer_depth`/`can_merge`/`duration_ns` |
-| 验证 | `*verify == value`（自读回） | `generation`/`refs`/`depth`/`refcount`/`carrier_readback` 独立哨兵 |
+| **喷标记** | **完全没有** | 向 `epitem.generation` 喷 `GENMARK0`（`0x304b52414d4e4547`）约 68 份（§2.19.1） |
+| 写入 | **已修（批次 A）** —— 旧的 `splice(..., static_cast<int>(target), ...)` 把内核地址当 fd，必然 `EBADF`，已删除；现返回 `ROUTE_RETRYABLE` | **240 路 `write(fd_table[i], payload, len)`**，每次须返回全长；命令字 `'W'` 门控（§2.9） |
+| **投递模型** | 主线程直接投递 | `redirect` 以 **fork** 执行，父进程 `timeout 240s` 等待（§2.17） |
+| 回读 | **完全没有** | `pread64` **按槽位偏移**校验 + `PIPE_OBSERVED`（§2.9） |
+| 时序 | 扫描 `{0,1,2,4,8,12,20,32,48,64}`（`fd_graph_route.cpp:248`），每档只试 1 次，无重试循环 | `delay_us` **自 0 递增**、**有界重试**；**成功需 `chain_hit` 且 `bit4`**，`chain_hit` 单独为 1 **不算成功**；**成功可在第 0 轮**（§2.19.2） |
+| 计数 | 已修（批次 A）：`pipe_fill_hits` 如实表示「vmsplice 返回 8」，不再冒充实回收 | `RECLAIM_HIT` 记录 `generation`/`outer_depth`/`can_merge`/`duration_ns` |
+| **验证** | `*verify == value`（**自读回**，无区分力） | 读 **`/sys/fs/selinux/enforce`**，首字节 `!= '1'` 即成功，失败重试一次（§2.17.1） |
 
-## 5. profile 缺失的 4 个几何字段（新增发现）
+## 5. profile 的 4 个 eventpoll 几何字段（**已补齐**）
 
-`preload.so` 的几何串含 `gen=0xa8 refs=0xb0 depth=0xb8 refcount=0xbc`，
-其 `PROBE_READBACK` 依赖 `refs`/`depth`/`refcount` 做独立验证。
-当前 `6.12.58` profile **没有**这 4 项（`epitem_ep=0x48`、`epitem_fllink=0x50` 已正确）。
-若要移植验证逻辑，需**扩展 profile 几何字段** —— 属 L 级 wire/profile 格式变更，
-须先出计划并同步 native `profile/binary.cpp` 与 Kotlin `FdGraphConfig`（键名逐字一致）。
+`preload.so` 的几何串含 `gen=0xa8 refs=0xb0 depth=0xb8 refcount=0xbc`。
+这 4 项**已由批次 B 落地**（`f71f37b`）：profile 携带
+`epitem_gen`/`epitem_refs`/`epitem_depth`/`epitem_refcount`，
+native `profile/model.h` + `profile/binary.cpp` 与 Kotlin `FdGraphConfig` /
+`AndroidProfileConfigController` 双侧同步，键名逐字一致，
+并已由 6.12.58 BTF 逐项确认。
+（`epitem_ep=0x48`、`epitem_fllink=0x50` 早已正确。）
+
+**但它们不再是验收判据**：§2.17.1 已确认判据是读 `/sys/fs/selinux/enforce`。
+这 4 项的用途降级为**诊断**（参考实现的 `RACE` 行确实打印 `generation` 与 `depth`），
+以及批次 D 喷标记 `GENMARK0` 时定位 `epitem.generation` 所需的偏移。
 
 ## 6. 缺失清单（按依赖顺序）
 
-已被 §2.7–§2.10 **确认取值**的项标注 ✅（实现时按该处描述照做，无需再取证）：
+> 状态截至 `f080a9b`。已由 §2.14–§2.19 **确认取值**的项标 ✅（实现时照做，无需再取证）；
+> **已落地**的项标 🟢。
 
-1. `late_refs`：诱饵 unlink + fd preflight。
-2. 活跃槽位选取与 `RECLAIM_HIT` 两模式判定。
-3. ✅ `fake_fllink` 构造（§2.8：`base | 0x108`）；
-   ⚠️ `pipe_flags`(0x18) 的 `CAN_MERGE` 写入点仍未定位，改为实现期实测。
-4. ✅ `resize_sample` 语义（§2.7：`F_SETPIPE_SZ` 8K/128K + 回读，**失败即 `exit(-1)`**）。
-5. ✅ fd 表 + 建管道（§2.10：`malloc(0x780)`、240 槽步长 8、**空槽初值 `-1`**、
-   每槽一根管道）。
-6. ✅ `payload_writes` 投递（§2.9：命令字 `'W'` 门控、240 路 `write` 须返回全长、
+1. 🟢 **抬 `RLIMIT_NOFILE`**（§2.14）：`cur ≥ 当前 + 0x60a0 (24736)`，不足致命退出。
+2. 🟢 **嵌套 epoll 图**（§2.16）：`width 96 × fanout 256 = 24576`，每轮
+   `epoll_create1` + `epoll_ctl(prev, ADD)`。
+3. `late_refs`：诱饵 unlink（含 `close_after_trigger=1` 顺序约束）+ fd preflight。
+4. 活跃槽位选取与 `RECLAIM_HIT` 两模式判定（§2.18.2：`chain_hit` **且** `bit4`）。
+5. ✅ `fake_fllink` 构造（§2.8：`base | 0x108`）。
+6. ✅ `resize_sample` 语义（§2.7：`F_SETPIPE_SZ` 8K/128K + 回读，**失败即 `exit(-1)`**）。
+7. ✅ fd 表 + 建管道（§2.10：`malloc(0x780)`、240 槽步长 8、**空槽初值 `-1`**、每槽一根管道）。
+8. ✅ `payload_writes` 投递（§2.9：命令字 `'W'` 门控、240 路 `write` 须返回全长、
    `pread64` 按槽位偏移回读）。
-7. `pipe_worker` 线程模型（持槽 + 与主线程的握手；§2.5.3 的自旋点）。
-8. 每档 delay 的**多次重试与统计**（stub 每档只试 1 次，且 `RACE_SUMMARY` 未记录 `delay_us`，
-   无法定位命中档位）。
-9. 独立验证（哨兵 + carrier readback），替换自读回。
-10. 撤销 stub 中把内核地址当 fd 的 `splice()` 调用（该调用恒 `EBADF`）。
-11. ⚠️ **沿用 `-1` 空槽语义**（§2.10.1）：stub 现写 `0`，会把 fd 0（stdin）当有效管道。
+9. **`can_merge`**（§2.18.2）：**无需定位写点** —— 只需构造喷入数据使
+   偏移 `0x166` 的 bit 4 命中。
+10. **喷标记 `GENMARK0`**（§2.19.1）：向 `epitem.generation` 喷约 68 份
+    `0x304b52414d4e4547`；`marker_changed` 据此判定回收是否生效。
+11. **`redirect` 的 fork 模型**（§2.17）：子进程投递，父进程 240s 超时等待。
+12. **有界重试循环**（§2.19.2）：`delay_us` 自 0 递增；`chain_hit` 单独为 1 **不算成功**；
+    **成功可在第 0 轮**，不得因首轮未命中就判机制无效。
+13. `pipe_worker` 线程模型（持槽 + 与主线程的握手；§2.5.3 的自旋点）。
+14. **独立验证**：读 `/sys/fs/selinux/enforce`，首字节 `!= '1'` 即成功（§2.17.1），
+    替换自读回。⚠️ 早前「哨兵 + carrier readback」的表述已作废（不构成验证）。
+15. ⚠️ **沿用 `-1` 空槽语义**（§2.10.1）：stub 现写 `0`，会把 fd 0（stdin）当有效管道。
+16. 🟢 撤销 stub 中把内核地址当 fd 的 `splice()`（恒 `EBADF`）—— **批次 A 已完成**（`7e84335`）。
 
 ## 7. 下一步
 
 L 级改动（攻击关键路径），按 `AGENTS.md` 需先出计划文档并获认可再动代码。
 
-1. 反汇编 `0x2205a8..0x22264c`（含 `RACE_SUMMARY` / `RECLAIM_HIT` 格式串的函数）
-   与 `pipe_worker` / `redirect` 处理函数，把 §2.3 的推断升级为指令级事实。
-2. 据此产出实施计划，含所有权/生命周期审查（需在管道槽与 slab 对象间建立新持有关系）。
-3. 实现后重跑门禁；**必须冷启动**，且按 `AGENTS.md` 需同构建复现来判定因果。
+**已完成**：§7 原第 1 步（把 §2.3 的推断升级为指令级事实）已由
+§2.16–§2.19 完成，并已与 `preload.so` 自身成功日志逐条交叉验证（§2.19）。
+原第 2 步（实施计划 + 所有权/生命周期审查）已产出
+`docs/development/61258-fdgraph-primitive-plan.md`（17 步，含 24,576 个 epoll fd
+的所有权行），提交 `3991311` / `f080a9b`。
 
-在第 1 步完成前不要改动 `fd_graph_route.cpp`：现有 `prepare/execute/disarm/destroy`
-形状与 12 个常量是重写时的对照基准。
+**因此「第 1 步完成前不要改动 `fd_graph_route.cpp`」的闸门已解除** ——
+取证阶段结束，可以进入批次 D 实现。
+
+1. **批次 D 实现**：按计划文档 17 步执行。攻击关键路径，故必须
+   `tools/cmp_disasm.py` + `make -C src native-host-tests` + NDK 零告警 + `lint-tidy` 0。
+2. **批次 A 门禁（先做，纯对照）**：批次 A 不写任何目标，跑它能单独回答
+   「不写是否就不崩」—— 这个因果结论**在批次 D 落地后无法再获得**。
+   跑前先用 `tools/gate_preflight.py` 校验前置条件（冷启动、KernelSU 未加载、
+   `uname -r` 精确匹配、`RLIMIT_NOFILE` 余量），因为首次门禁正是因为
+   `boot_ms=42853` 非冷启动且未记录 KernelSU 状态而无法归因。
+3. **批次 D 门禁**：冷启动、固定 CPU 对、单 route、KernelSU 未加载；
+   PASS/FAIL **同等归档**至 `docs/analysis/device-gates/`。
