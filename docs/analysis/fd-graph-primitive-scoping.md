@@ -204,13 +204,65 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
 2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
    `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
    需 BTF 或真机读回交叉验证（批次 B 的前置）。
-3. `0x10`（bit4）在 `pipe_buffer.flags`(0x18) 上的写入点**尚未定位**，
+3. **bit4 的含义已确认为 `PIPE_BUF_FLAG_CAN_MERGE`**（见 §2.6），
+   但**其在 `pipe_buffer.flags` 上的写入点仍未定位**，
    且**不要用「向 `[x?,#0x18]` 存值」来搜**：本次已验证该模式在本二进制中
    大量误命中——`0x224b40`–`0x224c38` 的七个 `str w?, [x27, #0x18]` 属于
    **HOCON/JSON 解析器的游标**（`ldrsw x8,[x27,#0x18]` → `add #8` → `str`，
    伴随对 `'l'/'h'/'o'/'c'/'m'/'p'/'s'/'u'/'d'/'i'/'%'` 的 ASCII 比较），
    与 `pipe_buffer` 无关。定位必须带类型上下文（从 `pipe_buffer` 基址 +
    槽位索引出发做数据流），不能只凭偏移字面量。
+
+### 2.6 内核源码交叉验证（v6.12 GKI 公开源码）
+
+设备为 production build（`ro.build.type=user`、`ro.secure=1`），`adb root` 不可用，
+`/sys/kernel/btf/vmlinux` 拒绝读取；工作区亦无 `boot.img`/`vmlinux`/BTF。
+故退而用公开 GKI 源码交叉验证，**只采信能被设备已确认值印证的结论**。
+
+#### 2.6.1 已证实：`bit4` = `PIPE_BUF_FLAG_CAN_MERGE`（`include/linux/pipe_fs_i.h`）
+
+```c
+#define PIPE_BUF_FLAG_LRU      0x01
+#define PIPE_BUF_FLAG_ATOMIC   0x02
+#define PIPE_BUF_FLAG_GIFT     0x04
+#define PIPE_BUF_FLAG_PACKET   0x08
+#define PIPE_BUF_FLAG_CAN_MERGE 0x10   /* can merge buffers */
+#define PIPE_BUF_FLAG_WHOLE    0x20
+```
+
+**bit4 就是 `CAN_MERGE`**，是合法标志位，不是伪造的非法值。
+它的机制意义：置位后 `pipe_buf_merge()` 可**不拷贝**而直接串接页，
+这正是把受控页挂进管环的机制前提 —— 与日志
+`RECLAIM_HIT mode=pipe ... can_merge=%u` 字段名一致。
+
+#### 2.6.2 已证实：`pipe_buffer` 布局与 profile 完全一致
+
+```c
+struct pipe_buffer {
+	struct page *page;                          /* 0x00 */
+	unsigned int offset, len;                   /* 0x08, 0x0c */
+	const struct pipe_buf_operations *ops;      /* 0x10 */
+	unsigned int flags;                         /* 0x18 */
+	unsigned long private;                      /* 0x20 */
+};                                             /* sizeof = 0x28 */
+```
+
+| 项 | v6.12 源码 | profile | 真机日志 |
+|---|---|---|---|
+| `flags` 偏移 | `0x18` | `pipe_flags=0x18` | 一致 |
+| `sizeof` | `0x28` | `pipe_buffer=0x28` | 一致 |
+
+这是本节唯一被设备已确认值**双向印证**的结构，故其余推断均以此为限。
+
+#### 2.6.3 未能证实：`gen`/`refs`/`depth`/`refcount`
+
+`torvalds/linux` `fs/eventpoll.c` 的 `struct eventpoll` 字段顺序为
+`u64 gen` → `struct hlist_head refs` → `u8 loop_check_depth` → `refcount_t refcount`。
+但按 arm64 对齐推算**与 `preload.so` 串不自洽**：`refs`(16 字节) 若在 `0xb0`
+则占到 `0xc0`，与串中的 `depth=0xb8`、`refcount=0xbc` 冲突。
+
+结论：**main 分支源码不能替代 6.12.58 的真实布局**（字段增删会移动偏移）。
+这 4 个偏移必须来自 6.12.58 的 BTF 或真机读回，批次 B 在拿到之前不得填值。
 
 ## 3. 真实机制（综合 §2）
 
