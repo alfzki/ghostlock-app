@@ -172,8 +172,35 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 
 ### 批次 D：实现回收 + 受控写入
 
-按 scoping §6 依赖顺序：`late_refs` 诱饵 → 槽位选取与 `RECLAIM_HIT` 两模式 →
-`fake_fllink` + `pipe_flags` bit4 改写 → `pipe_worker` 线程模型。
+批次 C 已把投递链各环的**取值**确认完毕，因此本批不再需要取证，
+按 scoping §2.7–§2.10 照做即可。依赖顺序与已确认取值：
+
+1. **fd 表**（§2.10）：`malloc(0x780)`（或等效 `mmap`），`memset 0xff`；
+   240 槽 × 8 字节步长。**空槽初值必须是 `-1`，不得用 `0`**
+   —— stub 现写 `0`，等于把 fd 0（stdin）当有效管道。
+2. **每槽建管道**（§2.10）：240 根，fd 写回对应槽位。
+3. **两级缩放**（§2.7）：`fcntl(fd, F_SETPIPE_SZ, n<<12)`，
+   `reclaim_small` 用 `n=2`（8 KiB）、`reclaim_expand` 用 `n=0x20`（128 KiB）；
+   每次都必须 `fcntl(fd, F_GETPIPE_SZ)` 回读并要求 `observed == requested`。
+   **失败是致命的**（原实现记 `resize_fail` 后 `exit(-1)`），
+   故必须在投递前处理失败，不可失败后重入。
+4. **`late_refs`**：诱饵 unlink + fd preflight。
+5. **槽位选取与 `RECLAIM_HIT`** 两模式（`mode=pipe` / `mode=zero`）。
+6. **`fake_fllink`**（§2.8）：`base | 0x108`（`LIST_POISON1 + 8`）。
+7. **`CAN_MERGE` 写入**（§2.6.1）：语义已确认（置位后 `pipe_buf_merge()`
+   可不拷贝直接串接页），但**指令位置未知且静态追查已封顶**（三个候选全部证伪）——
+   本批**用实测/打点确认**，不要靠猜偏移。
+8. **payload 投递**（§2.9）：命令字 `'W'` 门控；
+   240 路 `write(fd_table[i], payload, len)`，**每次必须返回完整长度**，
+   否则整轮放弃。
+9. **回读**（§2.9）：`pread64` 按**槽位偏移**校验（日志 `PIPE_OBSERVED`），
+   而非顺序 `read`。
+10. **`pipe_worker` 线程模型**：持槽 + 与主线程握手（§2.5.3 的自旋点）。
+11. 撤销 stub 把内核地址当 fd 的 `splice()`（恒 `EBADF`）。
+
+> 与批次 A 的关系：批次 A 的第 1 项（删无效 `splice()`）会被本批第 11 项覆盖。
+> 但**批次 A 仍应先单独跑一次门禁** —— 它是「不写是否就不崩」的唯一干净对照，
+> 这个因果结论无法在机制实现后再获得。
 
 ### 批次 E：独立验证
 
