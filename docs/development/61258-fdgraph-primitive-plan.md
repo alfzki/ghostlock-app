@@ -14,6 +14,48 @@
 目标：把 stub 换成 `preload.so` 证实的 **pipe_buffer 槽位回收 + 受控页写入**机制，
 使 W1 能完成，并让成功判定不再依赖自读回。
 
+### 1.1 为什么必须是 fd_graph（三条 route 的现状）
+
+复核结论（2026-10-03）：6.12.58 上**其余三条 route 均已排除**，
+fd_graph 不是偏好选择而是唯一候选，因此本 port 无法绕开。
+
+| route | 状态 | 依据 |
+|---|---|---|
+| `select_stack` | **已证不可行** | 见下 |
+| `tcp_zerocopy` | **机制未确认，阻塞** | 见下 |
+| `multicast_waiter` | 不支持 | 仅 5.x |
+
+**`select_stack` 不可行**（`tcp-zerocopy-6x-plan.md:19-59`，基于本机 `boot.img`
+逐字节反汇编，非推测）：
+- 实测 `waiter_shift = 14`（pselect 链 592B − futex 链 576B → Δ112B → 14 qword）；
+- 路由可寻址窗口 `global_word ∈ [0,14]`（`PSELECT_ROUTE_NFDS=320` ⇒
+  `words_per_set=5`）；
+- waiter 需要落在 `[14,27]`；
+- 窗口无法扩大：`core_sys_select` 仅在 `round_down(FDS_BYTES(nfds),8) < 43`
+  时把 `fd_set` 放内核栈，`nfds=321` 即落到堆，永远无法与栈上 waiter 重叠；
+- `[14,27] ∩ [0,14]` 为空。
+- 且该结论有**真机代价**：文档记载此前 select_stack 在本内核已导致 **3 次 kernel panic**。
+  该结论另有公开 PoC 独立佐证（`tcp-zerocopy-6x-plan.md:379-385`）。
+
+**`tcp_zerocopy` 阻塞**（同文档 §批次 3' 决策门）：
+- 批次 1 只证明原语存在、偏移可真实植入用户缓冲区，**未证明**写落点正确；
+- 路由把 `waiter_task`/`fake_lock` 写到 `zc[0x28]`/`zc[0x30]`，那是 **6.1 compact 家族**
+  布局；本内核 waiter 为 non-compact（`task@0x50`/`lock@0x58`），对不上；
+- 硬阻塞：伪造 waiter 由 `prepare_skb_payload` 写入 `heap.current.base`，
+  而 zc 的写入目标是 `mapping + page_size`，**不是同一块内存**；
+  「谁把哪块内存变成 PI walk 实际走到的 waiter」在本仓库与 git 历史中**均无记载**。
+- 用户已明确要求「路线跑通前不碰真机」，故不得试验性真机验证。
+
+**关键结论：tcp_zerocopy 的阻塞点与 fd_graph 的缺口是同一个问题** ——
+「写入如何落到内核真正遍历的那个对象上」。`preload.so` 正是这一问题的**已验证答案**
+（同机同 kernel `RESULT PASS`），因此 fd_graph 的 port 必须把机制补全，
+而不是绕道另选 route。
+
+> 文档漂移（待修）：`tcp-zerocopy-6x-plan.md:195-196` 写「故 profile 保持
+> `select_stack`（`waiter_shift = 0`）」，但该 profile 已在 `aed09ad` 改为 `fd_graph`，
+> 现无 `select_stack` 块也无 `compact_waiter`。结论本身仍有效（select_stack 不可行），
+> 只是「保持 select_stack」的表述已过时。
+
 ## 2. 影响文件
 
 | 文件 | 改动性质 |
