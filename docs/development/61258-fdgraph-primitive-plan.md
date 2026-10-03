@@ -222,6 +222,15 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 用 `generation`/`refs`/`depth`/`refcount` 哨兵 + 经 carrier 的 readback
 替换 `*verify == value` 自读回（`fd_graph_route.cpp:267`）。
 
+**依赖**：① 批次 D 已实现（哨兵挂在投递路径上）；
+② 批次 B 的 4 个偏移已由 6.12.58 BTF 确认 —— `generation`/`refs`/`depth`/`refcount`
+正是那 4 个**尚未验证**的字段，故 **E 随 B 一同阻塞**（见 §3 批次 B）。
+
+**E 未就绪时的替代口径**：批次 D 的成功判据先用 `preload.so` 同款 ——
+每次 `write` 返回全长 + `pread64` 按槽位偏移读回（`PIPE_OBSERVED`），
+记为 `chain_hits`；**不以** `*verify == value` 自读回为准（stub 现状即此法，
+无区分力，见 scoping §2.5.2 与门禁记录中 `chain_hits=0` 的教训）。
+
 ### 批次 F：真机门禁
 
 **必须冷启动**；固定 CPU 对；单 route；KernelSU 未加载。
