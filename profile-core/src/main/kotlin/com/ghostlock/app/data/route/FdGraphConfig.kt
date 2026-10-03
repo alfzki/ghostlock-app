@@ -52,19 +52,21 @@ data class FdGraphConfig(
     companion object {
         val EMPTY = FdGraphConfig(null, null, null, null, null, null, null, null, null, null, null, null)
 
+        /* Prefixes are load-bearing: ProfileResolver.nativeValue only rewrites a route
+         * field for a path carrying this route's name. Do not strip them. */
         fun from(value: (String) -> Long?): FdGraphConfig = FdGraphConfig(
-            eventpollSize = value("eventpoll_size")?.toUInt(),
-            epitemEp = value("epitem_ep")?.toUInt(),
-            epitemFllink = value("epitem_fllink")?.toUInt(),
-            pipeBuffer = value("pipe_buffer")?.toUInt(),
-            pipeFlags = value("pipe_flags")?.toUInt(),
-            pipeSlots = value("pipe_slots")?.toUInt(),
-            pipeRing = value("pipe_ring")?.toUInt(),
-            pipeObject = value("pipe_object")?.toUInt(),
-            graphWidth = value("graph_width")?.toUInt(),
-            graphFanout = value("graph_fanout")?.toUInt(),
-            graphEdges = value("graph_edges")?.toUInt(),
-            objectsPerOrder3 = value("objects_per_order3")?.toUInt(),
+            eventpollSize = value("fd_graph.eventpoll_size")?.toUInt(),
+            epitemEp = value("fd_graph.epitem_ep")?.toUInt(),
+            epitemFllink = value("fd_graph.epitem_fllink")?.toUInt(),
+            pipeBuffer = value("fd_graph.pipe_buffer")?.toUInt(),
+            pipeFlags = value("fd_graph.pipe_flags")?.toUInt(),
+            pipeSlots = value("fd_graph.pipe_slots")?.toUInt(),
+            pipeRing = value("fd_graph.pipe_ring")?.toUInt(),
+            pipeObject = value("fd_graph.pipe_object")?.toUInt(),
+            graphWidth = value("fd_graph.graph_width")?.toUInt(),
+            graphFanout = value("fd_graph.graph_fanout")?.toUInt(),
+            graphEdges = value("fd_graph.graph_edges")?.toUInt(),
+            objectsPerOrder3 = value("fd_graph.objects_per_order3")?.toUInt(),
         )
     }
 }

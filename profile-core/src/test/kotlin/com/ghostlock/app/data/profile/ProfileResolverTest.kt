@@ -1,6 +1,7 @@
 package com.ghostlock.app.data.profile
 
 import com.ghostlock.app.data.asValueMap
+import com.ghostlock.app.data.route.FdGraphConfig
 import com.ghostlock.app.data.valueMapOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -42,6 +43,25 @@ class ProfileResolverTest {
             "route" to valueMapOf("multicast_waiter" to valueMapOf("waiter_off" to 96)),
         )
         assertEquals(96L, ProfileResolver.nativeValue(profile, "multicast_waiter", "none", "mcast.waiter_off"))
+    }
+
+    @Test
+    fun `fd_graph geometry resolves through the route branch`() {
+        val profile = valueMapOf(
+            "route" to valueMapOf(
+                "fd_graph" to valueMapOf(
+                    "eventpoll_size" to 208,
+                    "epitem_ep" to 72,
+                    "epitem_fllink" to 80,
+                ),
+            ),
+        )
+        val config = FdGraphConfig.from { path ->
+            ProfileResolver.nativeValue(profile, "fd_graph", "none", path)
+        }
+        assertEquals(208u, config.eventpollSize)
+        assertEquals(72u, config.epitemEp)
+        assertEquals(80u, config.epitemFllink)
     }
 
     @Test
