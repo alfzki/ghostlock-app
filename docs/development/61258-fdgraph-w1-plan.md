@@ -211,6 +211,10 @@ python3 tools/cmp_disasm.py <基线> build/native/ghostlock   # 建立并归档�
 若批次 4 的 W1 未通过，本批次不做：`PreSpawn` 在 `w1()` 返回 `Continue` 之后才运行
 （`src/core/session/backend/cve_2026_43499_backend.cpp:472-485`），W1 不通则该 `gate` 形同虚设。
 
+已做的预验证（临时加上 `enabled = 1` 跑过后已还原）：`BuiltinProfilesTest` 仍然通过，
+即 `enabled = 1` 缺少 `tag_b_off` 也能通过全字段校验，批次 5 没有隐藏阻塞。唯一失败是
+`native-doc-golden.sha256` 漂移（导出字节数 1876 → 1892），所以批次 5 记得同步该行哈希。
+
 ### 批次 6：归档
 
 按门禁记录模板归档到 `docs/analysis/device-gates/`，并更新 `AGENTS.md` 的历史索引。
