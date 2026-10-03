@@ -88,6 +88,33 @@ target → environment → carrier_preflight → carrier_patch → patch
 回收 `pipe_buffer` 槽位 → 使其指向**受控页**（`preset_direct_map`）→
 `pipe_worker` 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_page`。
 
+### 2.4 指令级：写入函数的 syscall 清单（批次 C 结论）
+
+`file_slots_ready` / `KNOWN_PAGE` / `PROBE_TARGET` / `decoy_unlink` /
+`count=...vmsplice_pages` 五个阶段格式串的 `add` 交叉引用**全部落在同一函数**
+`0x2205a8`（8356 字节）—— 即整个竞态编排是**单个大函数**。
+
+该函数内的直接 syscall thunk 调用清单：
+
+| syscall | 次数 | 推断作用 |
+|---|---|---|
+| `epoll_ctl` (21) | **7** | 构造/改写 epitem 图（`fd_graph` 之名由此而来） |
+| `read` (63) | 2 | 探针与独立读回 |
+| `write` (64) | **1** | **payload 投递**（对应 `payload_writes`） |
+| `splice` (76) / `vmsplice` (75) / `tee` (77) | **0** | 死代码，确认 §2.1 |
+
+因此：
+1. **`splice`/`vmsplice`/`tee` 确认未被使用**（独立于 §2.1 的 thunk 统计，
+   此处是调用点级别的证据）。
+2. **写入经由单次 `write`**（arm64 `__NR_write`=64，取自 NDK `asm-generic/unistd.h`），
+   与 `pipe_worker` 的 `payload_writes` 一致。
+3. **原语是 epoll fd 图**：7 次 `epoll_ctl` 对应 CVE-2026-43499 的
+   `epitem.fllink` 链操纵，与 profile 的 `epitem_ep=0x48`/`epitem_fllink=0x50` 吻合。
+
+> 尚未确认（需批次 C 续做）：7 次 `epoll_ctl` 的具体参数序列，
+> 以及 `write` 的目标 fd 如何指向被回收的 `pipe_buffer` 槽位。
+> 这两点决定批次 D 的实现细节。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，

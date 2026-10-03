@@ -56,9 +56,19 @@
 
 ### 批次 C：补齐机制证据（只读分析，零代码风险）
 
-反汇编 `preload.so` 的 `pipe_worker` / `redirect` / `late_refs` 处理函数，
-把 scoping §2.3 的推断升级为指令级事实。**批次 D 的设计依赖此批结果**，
-故 C 未完成前不进入 D。
+反汇编 `preload.so` 的编排函数，把 scoping §2.3 的推断升级为指令级事实。
+
+**已确认**（scoping §2.4）：全部五个阶段格式串落在**单个** 8356 字节函数
+`0x2205a8`；其 syscall 清单为 `epoll_ctl`×7、`read`×2、`write`×1，
+**`splice`/`vmsplice`/`tee` 各 0 次**。故：原语是 **epoll fd 图**
+（7 次 `epoll_ctl` 操纵 `epitem.fllink`），payload 经**单次 `write`** 投递。
+
+**待确认**（批次 D 的实现依赖，故 D 暂不启动）：
+
+1. 7 次 `epoll_ctl` 的具体参数序列（如何建图、何时改 `fllink`）。
+2. 单次 `write` 的目标 fd 如何指向被回收的 `pipe_buffer` 槽位。
+3. `gen`/`refs`/`depth`/`refcount` 四个偏移在 6.12.58 上的真值
+   （`preload.so` 串里的值是通用值，需 BTF 或真机读回交叉验证 —— 批次 B 的前置）。
 
 ### 批次 D：实现回收 + 受控写入
 
