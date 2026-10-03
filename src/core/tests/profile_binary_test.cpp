@@ -272,7 +272,7 @@ int32_t main(void) {
             doc[5] = static_cast<char>(version >> 8);
             assert(parse_doc(doc, &parsed, release, sizeof(release)) == -1);
         }
-        for (int route : {0, 4, 99}) {
+        for (int route : {0, 99}) {
             const std::string doc = build_doc(static_cast<uint8_t>(route), "r", {});
             assert(parse_doc(doc, &parsed, release, sizeof(release)) == -1);
         }
@@ -356,6 +356,50 @@ int32_t main(void) {
                        std::string_view(buf, static_cast<size_t>(base_size)),
                        &parsed, release, sizeof(release), nullptr, &stale) == 0);
         assert(!stale.enabled.has_value());
+    }
+
+    /* ---- fd_graph route section round trip and presence. ---- */
+    {
+        profile::kernel_offsets fdg = {};
+        fdg.uname_r = "fdgraph";
+        fdg.route = ghostlock::profile::kRouteFdGraph;
+        fdg.misc.eventpoll_size = 0xd0;
+        fdg.misc.epitem_ep = 0x48;
+        fdg.misc.epitem_fllink = 0x50;
+        fdg.misc.pipe_buffer = 0x28;
+        fdg.misc.pipe_flags = 0x18;
+        fdg.misc.pipe_slots = 0x20;
+        fdg.misc.pipe_ring = 0x500;
+        fdg.misc.pipe_object = 0x800;
+        fdg.misc.graph_width = 96;
+        fdg.misc.graph_fanout = 256;
+        fdg.misc.graph_edges = 24576;
+        fdg.misc.objects_per_order3 = 16;
+
+        assert(round_trip(fdg, &parsed, release, sizeof(release)) == 0);
+        assert(parsed.route == ghostlock::profile::kRouteFdGraph);
+        assert(parsed.misc.eventpoll_size.value_or(0) == 0xd0);
+        assert(parsed.misc.epitem_ep.value_or(0) == 0x48);
+        assert(parsed.misc.epitem_fllink.value_or(0) == 0x50);
+        assert(parsed.misc.pipe_buffer.value_or(0) == 0x28);
+        assert(parsed.misc.pipe_flags.value_or(0) == 0x18);
+        assert(parsed.misc.pipe_slots.value_or(0) == 0x20);
+        assert(parsed.misc.pipe_ring.value_or(0) == 0x500);
+        assert(parsed.misc.pipe_object.value_or(0) == 0x800);
+        assert(parsed.misc.graph_width.value_or(0) == 96);
+        assert(parsed.misc.graph_fanout.value_or(0) == 256);
+        assert(parsed.misc.graph_edges.value_or(0) == 24576);
+        assert(parsed.misc.objects_per_order3.value_or(0) == 16);
+
+        /* An absent optional stays absent. */
+        profile::kernel_offsets fdg_absent = {};
+        fdg_absent.uname_r = "fdgraph-absent";
+        fdg_absent.route = ghostlock::profile::kRouteFdGraph;
+        fdg_absent.misc.eventpoll_size = 0xd0;
+        assert(round_trip(fdg_absent, &parsed, release, sizeof(release)) == 0);
+        assert(parsed.misc.eventpoll_size.value_or(0) == 0xd0);
+        assert(!parsed.misc.epitem_ep.has_value());
+        assert(!parsed.misc.graph_width.has_value());
     }
 
     puts("profile_binary_test: ok");

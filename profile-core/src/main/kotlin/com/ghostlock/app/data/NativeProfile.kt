@@ -654,6 +654,7 @@ private fun routeSectionName(route: UInt): String = when (RouteKind.fromWire(rou
     RouteKind.TCP_ZEROCOPY -> "route.tcp_zerocopy"
     RouteKind.SELECT_STACK -> "route.select_stack"
     RouteKind.MULTICAST_WAITER -> "route.multicast_waiter"
+    RouteKind.FD_GRAPH -> "route.fd_graph"
     null -> ""
 }
 

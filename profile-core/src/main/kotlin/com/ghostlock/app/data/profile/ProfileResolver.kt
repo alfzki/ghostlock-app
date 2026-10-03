@@ -31,7 +31,7 @@ object ProfileResolver {
      * Canonical native field lookup over the declared route branches. The v2
      * transport carries `recommended_cpus`, so the effective `selected_cpus`
      * is folded into those slots; `compact_waiter`/`pselect_waiter_shift`/
-     * `mcast.*` map onto `route.<name>.*` then `fallback.route.<name>.*`.
+     * `mcast.*`/`fd_graph.*` map onto `route.<name>.*` then `fallback.route.<name>.*`.
      */
     fun nativeValue(
         profile: Map<String, Any?>,
@@ -67,6 +67,16 @@ object ProfileResolver {
                 profile.getLongAt("fallback.route.$fallbackTo.$field")?.let { return it }
             }
             profile.getLongAt("mcast.$field")?.let { return it }
+        }
+        if (path.startsWith("fd_graph.")) {
+            val field = path.removePrefix("fd_graph.")
+            route?.let { name ->
+                profile.getLongAt("route.$name.$field")?.let { return it }
+            }
+            if (fallbackTo != null && fallbackTo != "none") {
+                profile.getLongAt("fallback.route.$fallbackTo.$field")?.let { return it }
+            }
+            profile.getLongAt("fd_graph.$field")?.let { return it }
         }
         return profile.getLongAt(path)
     }

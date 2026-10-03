@@ -189,6 +189,21 @@ namespace ghostlock::binary_profile {
             OPT("lock_offset", geometry.mcast_lock_offset),
         };
 
+        constexpr Field kRouteFdGraph[] = {
+            OPT("eventpoll_size", misc.eventpoll_size),
+            OPT("epitem_ep", misc.epitem_ep),
+            OPT("epitem_fllink", misc.epitem_fllink),
+            OPT("pipe_buffer", misc.pipe_buffer),
+            OPT("pipe_flags", misc.pipe_flags),
+            OPT("pipe_slots", misc.pipe_slots),
+            OPT("pipe_ring", misc.pipe_ring),
+            OPT("pipe_object", misc.pipe_object),
+            OPT("graph_width", misc.graph_width),
+            OPT("graph_fanout", misc.graph_fanout),
+            OPT("graph_edges", misc.graph_edges),
+            OPT("objects_per_order3", misc.objects_per_order3),
+        };
+
         struct Section {
             std::string_view name;
             const Field *fields;
@@ -252,6 +267,7 @@ namespace ghostlock::binary_profile {
             {"route.tcp_zerocopy", kRouteTcp, std::size(kRouteTcp)},
             {"route.select_stack", kRouteSelect, std::size(kRouteSelect)},
             {"route.multicast_waiter", kRouteMulticast, std::size(kRouteMulticast)},
+            {"route.fd_graph", kRouteFdGraph, std::size(kRouteFdGraph)},
         };
 #undef PLAIN
 #undef OPT
@@ -266,6 +282,8 @@ namespace ghostlock::binary_profile {
                     return "route.select_stack";
                 case profile::kRouteMulticastWaiter:
                     return "route.multicast_waiter";
+                case profile::kRouteFdGraph:
+                    return "route.fd_graph";
                 default:
                     return {};
             }
@@ -361,7 +379,8 @@ namespace ghostlock::binary_profile {
              * is rejected instead of being inferred. */
             if (out->route != profile::kRouteTcpZerocopy &&
                 out->route != profile::kRouteSelectStack &&
-                out->route != profile::kRouteMulticastWaiter) {
+                out->route != profile::kRouteMulticastWaiter &&
+                out->route != profile::kRouteFdGraph) {
                 return -1;
             }
 

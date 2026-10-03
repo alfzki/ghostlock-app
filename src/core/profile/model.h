@@ -42,6 +42,7 @@ namespace ghostlock::profile {
         TcpZerocopy = 1,
         SelectStack = 2,
         MulticastWaiter = 3,
+        FdGraph = 4,
     };
 
     /* Wire values for the v2 binary transport and the v1 JSON converter. */
@@ -52,6 +53,8 @@ namespace ghostlock::profile {
             std::to_underlying(RouteKind::SelectStack);
     inline constexpr uint8_t kRouteMulticastWaiter =
             std::to_underlying(RouteKind::MulticastWaiter);
+    inline constexpr uint8_t kRouteFdGraph =
+            std::to_underlying(RouteKind::FdGraph);
 
     /* Single native route catalog: token <-> wire value. Adding a route means
      * one entry here plus its RoutePolicy / procedure. */
@@ -64,6 +67,7 @@ namespace ghostlock::profile {
         {"tcp_zerocopy", kRouteTcpZerocopy},
         {"select_stack", kRouteSelectStack},
         {"multicast_waiter", kRouteMulticastWaiter},
+        {"fd_graph", kRouteFdGraph},
     };
 
     [[nodiscard]] inline uint8_t route_kind_from_string(std::string_view name) {
@@ -145,6 +149,19 @@ namespace ghostlock::profile {
         std::optional<uint8_t> compact_waiter;
         std::optional<uint32_t> kernelsnitch_collisions;
         std::optional<uint32_t> mm_struct_sz;
+        // fd_graph route geometry (from preload.so .rodata strings)
+        std::optional<uint32_t> eventpoll_size;
+        std::optional<uint32_t> epitem_ep;
+        std::optional<uint32_t> epitem_fllink;
+        std::optional<uint32_t> pipe_buffer;
+        std::optional<uint32_t> pipe_flags;
+        std::optional<uint32_t> pipe_slots;
+        std::optional<uint32_t> pipe_ring;
+        std::optional<uint32_t> pipe_object;
+        std::optional<uint32_t> graph_width;
+        std::optional<uint32_t> graph_fanout;
+        std::optional<uint32_t> graph_edges;
+        std::optional<uint32_t> objects_per_order3;
     };
 
     struct RouteGeometry {
@@ -185,6 +202,21 @@ namespace ghostlock::profile {
 
     struct TcpZerocopyLayout {
         std::optional<uint8_t> compact_waiter;
+    };
+
+    struct FdGraphLayout {
+        std::optional<uint32_t> eventpoll_size;
+        std::optional<uint32_t> epitem_ep;
+        std::optional<uint32_t> epitem_fllink;
+        std::optional<uint32_t> pipe_buffer;
+        std::optional<uint32_t> pipe_flags;
+        std::optional<uint32_t> pipe_slots;
+        std::optional<uint32_t> pipe_ring;
+        std::optional<uint32_t> pipe_object;
+        std::optional<uint32_t> graph_width;
+        std::optional<uint32_t> graph_fanout;
+        std::optional<uint32_t> graph_edges;
+        std::optional<uint32_t> objects_per_order3;
     };
 
 
@@ -327,6 +359,25 @@ namespace ghostlock::profile {
 
         [[nodiscard]] TcpZerocopyLayout tcp_zerocopy_layout() const noexcept {
             return (TcpZerocopyLayout){.compact_waiter = values_.misc.compact_waiter};
+        }
+
+        [[nodiscard]] FdGraphLayout fd_graph_layout() const noexcept {
+            return loaded_
+                       ? (FdGraphLayout){
+                           .eventpoll_size = values_.misc.eventpoll_size,
+                           .epitem_ep = values_.misc.epitem_ep,
+                           .epitem_fllink = values_.misc.epitem_fllink,
+                           .pipe_buffer = values_.misc.pipe_buffer,
+                           .pipe_flags = values_.misc.pipe_flags,
+                           .pipe_slots = values_.misc.pipe_slots,
+                           .pipe_ring = values_.misc.pipe_ring,
+                           .pipe_object = values_.misc.pipe_object,
+                           .graph_width = values_.misc.graph_width,
+                           .graph_fanout = values_.misc.graph_fanout,
+                           .graph_edges = values_.misc.graph_edges,
+                           .objects_per_order3 = values_.misc.objects_per_order3,
+                       }
+                       : FdGraphLayout{};
         }
 
         [[nodiscard]] uint32_t or_default(uint32_t value, uint32_t fallback)

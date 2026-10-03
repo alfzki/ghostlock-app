@@ -324,7 +324,7 @@ namespace ghostlock::kernelsnitch {
  * @arg __pin_cpu: CPU the calling thread is pinned to for the search
  * @return shared KernelSnitch state
  */
-    KernelSnitchContext *context_init(size_t __mm_struct_sz,
+    inline KernelSnitchContext *context_init(size_t __mm_struct_sz,
                                       size_t __mm_slab_order,
                                       size_t __thread_cnt,
                                       size_t __collision_cnt,
@@ -596,7 +596,7 @@ namespace ghostlock::kernelsnitch {
  */
     /* Execute collision discovery. Input/output: KernelSnitchContext; output:
  * collision set and state transition retained by the context. */
-    void context_find_collisions(KernelSnitchContext *ks) {
+    inline void context_find_collisions(KernelSnitchContext *ks) {
         ASSERT_pr((ks->state == KERNELSNITCH_INIT), "wrong state\n");
         ASSERT_pr((ks->collisions >= 2), "need at least one collision\n");
         if (ks->verbose) pr_info("start finding collisions\n");
@@ -617,7 +617,7 @@ namespace ghostlock::kernelsnitch {
         }
     }
 
-    int32_t context_has_collisions(const KernelSnitchContext *ks) {
+    inline int32_t context_has_collisions(const KernelSnitchContext *ks) {
         ASSERT_pr((ks->state == KERNELSNITCH_COLLISIONS_FOUND || ks->state == KERNELSNITCH_COLLISIONS_NOT_FOUND),
                   "wrong state\n");
         return ks->state == KERNELSNITCH_COLLISIONS_FOUND;
@@ -629,7 +629,7 @@ namespace ghostlock::kernelsnitch {
  */
     /* Execute address scanning using discovered collisions. Input/output:
  * KernelSnitchContext; output: 0 on a selected address, -1 otherwise. */
-    int32_t context_scan(KernelSnitchContext *ks) {
+    inline int32_t context_scan(KernelSnitchContext *ks) {
         ASSERT_pr((ks->state == KERNELSNITCH_COLLISIONS_FOUND), "wrong state\n");
         if (ks->verbose) pr_info("start bruteforcing\n");
         ghostlock::kernel::reset_cpu_pin();
@@ -648,11 +648,11 @@ namespace ghostlock::kernelsnitch {
  */
     /* Read and release are deliberately separate: result borrows the immutable
  * context, while destroy consumes all mmap-backed context storage. */
-    size_t context_result(const KernelSnitchContext *ks) {
+    inline size_t context_result(const KernelSnitchContext *ks) {
         return ks ? ks->mm_struct : static_cast<size_t>(-1);
     }
 
-    void context_destroy(KernelSnitchContext *ks) {
+    inline void context_destroy(KernelSnitchContext *ks) {
         if (!ks) return;
         munmap((void *) ks->times, sizeof(size_t) * ks->total_futexes);
         ks->times = 0;
@@ -670,7 +670,7 @@ namespace ghostlock::kernelsnitch {
  * Prints the current execution state KernelSnitch is in
  * @arg ks: shared KernelSnitch state
  */
-    void print_state(struct kernelsnitch_shared_state *ks) {
+    inline void print_state(struct kernelsnitch_shared_state *ks) {
         pr_info("ks state: %s\n", kernelsnitch_strings[ks->state]);
     }
 
@@ -678,7 +678,7 @@ namespace ghostlock::kernelsnitch {
  * Prints the found collisions
  * @arg ks: shared KernelSnitch state
  */
-    void print_collisions(struct kernelsnitch_shared_state *ks) {
+    inline void print_collisions(struct kernelsnitch_shared_state *ks) {
         pr_info("collisions:\n");
         for (size_t i = 2; i < ks->collisions; ++i) {
             size_t addr = ks->futex_addrs[i];

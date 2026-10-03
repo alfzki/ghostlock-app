@@ -23,6 +23,8 @@ namespace ghostlock::route {
 
     RouteStatus do_kernel5_fake_lock_route(const memory::WriteRequest *request);
 
+    RouteStatus do_fd_graph_fake_lock_route(const memory::WriteRequest *request);
+
     using RouteKind = ghostlock::profile::RouteKind;
 
     /* Native middleware catalog (Batch 3): each policy is one selectable
@@ -128,6 +130,19 @@ namespace ghostlock::route {
 #endif
     };
 
+    struct FdGraphPolicy : RoutePolicyDefaults {
+        static constexpr RouteKind kind = RouteKind::FdGraph;
+        // Conservative defaults: no multicast carry, no fast repair, no exact target,
+        // no tcp payload layout, no fallback. Can be relaxed only after device gate.
+        static bool supported(const profile::TargetProfile &profile) noexcept {
+            return profile.supports(kind);
+        }
+
+        static RouteStatus run(const memory::WriteRequest *request) {
+            return do_fd_graph_fake_lock_route(request);
+        }
+    };
+
     /* Compile-time middleware contract (Batch 4, D1=B slice 3c): every route
      * policy must expose the side-effecting route hooks. A policy inherits the
      * neutral defaults; a signature drift or a missing hook fails here. */
@@ -142,10 +157,11 @@ namespace ghostlock::route {
     static_assert(MiddlewarePolicy<SelectPolicy>);
     static_assert(MiddlewarePolicy<TcpPolicy>);
     static_assert(MiddlewarePolicy<MulticastPolicy>);
+    static_assert(MiddlewarePolicy<FdGraphPolicy>);
 
     /* The single registry. Appending a policy here wires every generic loop
      * below (variant, selection, fallback lookup, capabilities). */
-    using RoutePolicyList = std::tuple<SelectPolicy, TcpPolicy, MulticastPolicy>;
+    using RoutePolicyList = std::tuple<SelectPolicy, TcpPolicy, MulticastPolicy, FdGraphPolicy>;
 
     template<class T>
     struct variant_of;

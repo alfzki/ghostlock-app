@@ -17,9 +17,11 @@ namespace {
         route::RouteStatus select_status = {.code = route::ROUTE_OK};
         route::RouteStatus tcp_status = {.code = route::ROUTE_OK};
         route::RouteStatus multicast_status = {.code = route::ROUTE_OK};
+        route::RouteStatus fd_graph_status = {.code = route::ROUTE_OK};
         int32_t select_calls = 0;
         int32_t tcp_calls = 0;
         int32_t multicast_calls = 0;
+        int32_t fd_graph_calls = 0;
     };
 
     StubState state;
@@ -55,6 +57,12 @@ namespace ghostlock::route {
         state.multicast_calls++;
         return state.multicast_status;
     }
+
+    RouteStatus do_fd_graph_fake_lock_route(const memory::WriteRequest *request) {
+        assert(request);
+        state.fd_graph_calls++;
+        return state.fd_graph_status;
+    }
 } // namespace ghostlock::route
 
 int32_t main(void) {
@@ -65,6 +73,7 @@ int32_t main(void) {
     static_assert(SelectPolicy::kind == RouteKind::SelectStack);
     static_assert(TcpPolicy::kind == RouteKind::TcpZerocopy);
     static_assert(MulticastPolicy::kind == RouteKind::MulticastWaiter);
+    static_assert(FdGraphPolicy::kind == RouteKind::FdGraph);
 
     static_assert(!SelectPolicy::multicast && !SelectPolicy::w2_fast_repair &&
                   !SelectPolicy::w3_exact_target && !SelectPolicy::tcp_payload_layout &&
@@ -75,6 +84,9 @@ int32_t main(void) {
     static_assert(MulticastPolicy::multicast && MulticastPolicy::w2_fast_repair &&
                   !MulticastPolicy::w3_exact_target && !MulticastPolicy::tcp_payload_layout &&
                   !MulticastPolicy::allows_fallback);
+    static_assert(!FdGraphPolicy::multicast && !FdGraphPolicy::w2_fast_repair &&
+                  !FdGraphPolicy::w3_exact_target && !FdGraphPolicy::tcp_payload_layout &&
+                  !FdGraphPolicy::allows_fallback);
 
     /* Every policy satisfies the registry concept. */
     static_assert(RoutePolicy<SelectPolicy> && RoutePolicy<TcpPolicy> &&
@@ -83,18 +95,21 @@ int32_t main(void) {
     const profile::TargetProfile select_profile = profile_with(profile::kRouteSelectStack, 0);
     const profile::TargetProfile tcp_profile = profile_with(profile::kRouteTcpZerocopy, 0);
     const profile::TargetProfile mcast_profile = profile_with(profile::kRouteMulticastWaiter, 0);
+    const profile::TargetProfile fd_graph_profile = profile_with(profile::kRouteFdGraph, 0);
     const profile::TargetProfile auto_profile = profile_with(profile::kRouteAuto, 0);
 
     assert(SelectPolicy::supported(select_profile) && !SelectPolicy::supported(tcp_profile));
     assert(TcpPolicy::supported(tcp_profile) && !TcpPolicy::supported(mcast_profile));
     assert(MulticastPolicy::supported(mcast_profile) && !MulticastPolicy::supported(select_profile));
+    assert(FdGraphPolicy::supported(fd_graph_profile) && !FdGraphPolicy::supported(tcp_profile));
     assert(!SelectPolicy::supported(auto_profile) && !TcpPolicy::supported(auto_profile) &&
-           !MulticastPolicy::supported(auto_profile));
+           !MulticastPolicy::supported(auto_profile) && !FdGraphPolicy::supported(auto_profile));
 
     /* make_route_policy resolves the supported policy (first match wins). */
     assert(std::holds_alternative<SelectPolicy>(make_route_policy(select_profile)));
     assert(std::holds_alternative<TcpPolicy>(make_route_policy(tcp_profile)));
     assert(std::holds_alternative<MulticastPolicy>(make_route_policy(mcast_profile)));
+    assert(std::holds_alternative<FdGraphPolicy>(make_route_policy(fd_graph_profile)));
 
     /* Capability projection follows the resolved policy. */
     assert(!route_needs_ghost_disarm(select_profile) && !route_needs_ghost_disarm(tcp_profile) &&
@@ -132,7 +147,13 @@ int32_t main(void) {
     reset();
     result = run_route(auto_profile, &request, 1);
     assert(result.status.code == ROUTE_UNSUPPORTED && !result.fallback_used);
-    assert(state.select_calls == 0 && state.tcp_calls == 0 && state.multicast_calls == 0);
+    assert(state.select_calls == 0 && state.tcp_calls == 0 && state.multicast_calls == 0 && state.fd_graph_calls == 0);
+
+    /* ---- Dispatch: fd_graph route ---- */
+    reset();
+    result = run_route(fd_graph_profile, &request, 1);
+    assert(result.status.code == ROUTE_OK && !result.fallback_used);
+    assert(state.fd_graph_calls == 1 && state.select_calls == 0 && state.tcp_calls == 0 && state.multicast_calls == 0);
 
     /* ---- Fallback: only an allowed, clean failure may fall back. ---- */
     const profile::TargetProfile tcp_with_select = profile_with(profile::kRouteTcpZerocopy,

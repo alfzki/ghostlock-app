@@ -16,6 +16,7 @@ enum class RouteKind(
     MULTICAST_WAITER(3u, "multicast_waiter", MulticastConfig.EMPTY, { value ->
         MulticastConfig.from(value)
     }),
+    FD_GRAPH(4u, "fd_graph", FdGraphConfig.EMPTY, { value -> FdGraphConfig.from(value) }),
     ;
 
     fun emptyConfig(): RouteConfig = empty

@@ -173,4 +173,6 @@ namespace ghostlock::session::ancillary {
         AncillaryStage, ExploitSession &, AncillaryContext &);
     template Status VrGuardPolicy::apply<route::MulticastPolicy>(
         AncillaryStage, ExploitSession &, AncillaryContext &);
+    template Status VrGuardPolicy::apply<route::FdGraphPolicy>(
+        AncillaryStage, ExploitSession &, AncillaryContext &);
 } // namespace ghostlock::session::ancillary

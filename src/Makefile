@@ -32,6 +32,7 @@ CXX_SRCS := \
   core/route/tcp_zerocopy_route.cpp \
   core/route/select_stack_route.cpp \
   core/route/multicast_waiter_route.cpp \
+  core/route/fd_graph_route.cpp \
   core/memory/payload_builder.cpp \
   core/session/runtime_config.cpp \
   core/profile/binary.cpp \
@@ -100,6 +101,10 @@ $(NATIVE_BUILD_DIR)/%.o: %.c $(HDRS)
 	@mkdir -p $(dir $@)
 	$(NDK_CC) $(CFLAGS) -c $< -o $@
 
+$(NATIVE_BUILD_DIR)/core/route/fd_graph_route.o: core/route/fd_graph_route.cpp $(HDRS)
+	@mkdir -p $(dir $@)
+	$(NDK_CXX) $(CXXFLAGS) -fno-lto -c $< -o $@
+
 $(NATIVE_BUILD_DIR)/%.o: %.cpp $(HDRS)
 	@mkdir -p $(dir $@)
 	$(NDK_CXX) $(CXXFLAGS) -c $< -o $@
@@ -119,7 +124,7 @@ NATIVE_HOST_TESTS := \
   route_catalog_test component_catalog_test backend_contract_test route_policy_test \
   route_lifecycle_test runtime_time_test \
   kernelsnitch_scan_bounds_test route_controller_test pi_race_test \
-  tcp_zerocopy_route_test select_stack_route_test \
+  select_stack_route_test fd_graph_route_test \
   target_constants_test native_resource_test \
   profile_binary_test futex_hash_test number_parse_test \
   runtime_paths_test handoff_probe_test victim_context_test \
@@ -275,6 +280,10 @@ $(HOST_BUILD_DIR)/tcp_zerocopy_route_test: core/tests/tcp_zerocopy_route_test.cp
 $(HOST_BUILD_DIR)/select_stack_route_test: core/tests/select_stack_route_test.cpp core/route/select_stack_route.cpp core/route/select_stack_route.h core/race/pi_race.cpp core/support/native_resource.cpp core/support/native_resource.hpp
 	@mkdir -p $(HOST_BUILD_DIR)
 	$(HOST_CXX) $(HOST_CXXFLAGS) -pthread -Icore core/tests/select_stack_route_test.cpp core/route/select_stack_route.cpp core/race/pi_race.cpp core/support/native_resource.cpp -o $@
+
+$(HOST_BUILD_DIR)/fd_graph_route_test: core/tests/fd_graph_route_test.cpp core/route/fd_graph_route.cpp core/route/fd_graph_route.h core/profile/model.h core/support/native_resource.cpp core/support/native_resource.hpp
+	@mkdir -p $(HOST_BUILD_DIR)
+	$(HOST_CXX) $(HOST_CXXFLAGS) -Icore core/tests/fd_graph_route_test.cpp core/route/fd_graph_route.cpp core/support/native_resource.cpp -o $@
 
 $(HOST_BUILD_DIR)/futex_hash_test: core/tests/futex_hash_test.cpp core/kernelsnitch/futex_hash.h
 	@mkdir -p $(HOST_BUILD_DIR)
