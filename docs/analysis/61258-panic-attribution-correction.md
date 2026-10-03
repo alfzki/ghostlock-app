@@ -89,7 +89,7 @@ __arm64_sys_futex+0x238/0x390
 [route] CMP_REQUEUE_PI ret=-1 errno=35; waiting route_done
 ```
 
-`errno=35` = `EAGAIN`。即 **PI-futex 重入/重排队失败并回退**，
+`errno=35` = **`EDEADLK`**（非 `EAGAIN`）。即 **PI-futex 重入/重排队失败并回退**，
 而回退路径正是 `futex_lock_pi → rt_mutex_cleanup_proxy_lock →
 remove_waiter → rt_mutex_adjust_prio_chain`。**崩溃发生在 W1 原语自身的
 失败回退里**，与后续 route 做什么无关。

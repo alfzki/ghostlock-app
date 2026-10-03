@@ -1,0 +1,6 @@
+cmp_disasm vs b5825b42:
+  run_main_route_threads: 1/413 instr differ at idx 235
+    base: mov w6, wzr
+    cur:  mov w6, #0x1
+  owner_thread / waiter_thread / consumer_thread / do_kernel5_fake_lock_route / do_one_write: IDENTICAL (strict)
+  multicast_owner_worker / multicast_waiter_worker: STALE both sides

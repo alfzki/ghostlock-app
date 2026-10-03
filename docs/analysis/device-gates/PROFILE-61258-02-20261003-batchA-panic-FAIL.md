@@ -95,7 +95,7 @@ adb shell 为 `uid=2000(shell)`，且 KernelSU 未加载（无 `su`），因此�
    两次均需 `timeout` 强杀（exit `124`）。日志停在
    `[route] CMP_REQUEUE_PI ret=-1 errno=35; waiting route_done`。
    属生命周期缺陷，与 panic 独立，需单独定位。
-2. **后端 W1 原语本轮失败**：`CMP_REQUEUE_PI ret=-1 errno=35`（`EAGAIN`）。
+2. **后端 W1 原语本轮失败**：`CMP_REQUEUE_PI ret=-1 errno=35`（**`EDEADLK`**）。
    即便 route 完整可用，本轮 W1 也不会完成。
 3. **批次 A 日志改造已验证生效**：`delay_us` 逐档、`pipe_fill` 如实反映
    `vmsplice` 返回 8、`delivery=not-implemented`、`target=ffffff80027c6960`

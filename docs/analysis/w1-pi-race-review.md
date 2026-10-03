@@ -60,7 +60,7 @@ if (uval != nr_wake)   /* uval 来自 val3 */
 ```
 
 即 `0 != 1` ⇒ **每次调用都必然返回 `EAGAIN`**。
-而全部真机日志无一例外都是 `CMP_REQUEUE_PI ret=-1 errno=35`（`EAGAIN`）。
+而全部真机日志无一例外都是 `CMP_REQUEUE_PI ret=-1 errno=35`（**`EDEADLK`**）。
 
 **若成立，PI requeue 从未成功过**，竞态窗口根本没有建立，
 `target_futex` 上不会存在被 requeue 的 waiter。

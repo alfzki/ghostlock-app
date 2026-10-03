@@ -100,7 +100,7 @@ context=dumpstate selinux=Enforcing direct_map_used=0 absolute_kernel_write=0`
 崩溃点已定位到 W1 的 PI-futex 竞态，**不在 route**。批次 D 继续冻结。
 
 1. **审查 W1 失败回退**：`src/core/race/threads.cpp:182` 的
-   `FUTEX_CMP_REQUEUE_PI` 在 `errno=35`(`EAGAIN`) 时回退，
+   `FUTEX_CMP_REQUEUE_PI` 在 `errno=35`(**`EDEADLK`**，非 EAGAIN) 时回退，
    而回退路径正是 `rt_mutex_cleanup_proxy_lock → remove_waiter`。
    重点确认 `owner`/`waiter` 两线程是否可能对同一 `futex_waiter`
    并发 remove，以及本项目是否在回退前改写了 waiter 链。
