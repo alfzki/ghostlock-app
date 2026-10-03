@@ -876,17 +876,10 @@ internal class AndroidProfileConfigController(
          *
          * Add an entry only when a device gate has PROVEN the kernel panics.
          */
-        private val KnownUnrunnableReleases = mapOf(
-            // 6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k (Vivo V2514, MTK6993).
-            // All three W1 routes are blocked: select_stack needs write window
-            // [14,27] but the kernel's on-stack fd_set only offers [0,14];
-            // tcp_zerocopy hardcodes 6.1-compact task/lock offsets; the
-            // multicast stamp's ip_setsockopt copy window is absent on this
-            // build. Three cold-boot gates all ended in kernel_panic.
-            // See docs/development/tcp-zerocopy-6x-plan.md.
-            "6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k" to
-                "no working W1 route on this kernel (see docs/development/tcp-zerocopy-6x-plan.md)",
-        )
+        // Empty: 6.12.58 was ungated because its "all three W1 routes blocked"
+        // justification predated the fd_graph route and so blocked the only way
+        // to test that route. See docs/development/61258-fdgraph-w1-plan.md.
+        private val KnownUnrunnableReleases = mapOf<String, String>()
 
         private val RouteCommonRequired = listOf(
             "offset.init_task", "offset.init_cred", "offset.root_task_group", "offset.selinux_enforcing",

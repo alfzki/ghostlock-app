@@ -183,9 +183,6 @@ class BuiltinProfilesTest {
     }
 
     private companion object {
-        val KNOWN_UNRUNNABLE = mapOf(
-            "6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k" to
-                "no working W1 route on this kernel (see docs/development/tcp-zerocopy-6x-plan.md)",
-        )
+        val KNOWN_UNRUNNABLE = mapOf<String, String>()
     }
 }
