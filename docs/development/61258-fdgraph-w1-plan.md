@@ -30,7 +30,8 @@ flowchart TD
 2. **该 gate 正好挡住 `fd_graph` 唯一的验证手段。** 不解除就无法在真机上跑 `fd_graph`。
 3. **12 个 `fd_graph` 几何常量来自 `preload.so` 的 `.rodata`**，不是从本机内核推导的。
 4. **物理地址对被构建机 `/proc/iomem` 污染（已确认，见下节）。**
-5. **`vr_guard` 已备但未启用。** profile 有 `off_vr_sys_exit_tp = 40734048` 与
+5. **`fd_graph` 几何从未进入 native 文档（已确认并修复，见下节）。**
+6. **`vr_guard` 已备但未启用。** profile 有 `off_vr_sys_exit_tp = 40734048` 与
    `vr_guard.funcs_offset = 72`，但没有 `enabled` 键，故 `VrGuardPolicy::enabled()`
    返回 `false`（`value_or(0) != 0` 读到空值）。
 
@@ -133,6 +134,34 @@ MTK 的 SoC 回退值 `KIMAGE_TEXT_BASE - MTK_VADDR_BASE` 恰好等于 `P0_PHYS_
 （两者相等）不同是正常的，因为 moto MTK6893 的内核镜像并非装在 DRAM 基址。
 
 结论：污染仅限 `6.12.58`，批次 1b 的修正即全部范围，无需波及其他 profile。
+
+### 批次 2c：`fd_graph` 几何从未写进 native 文档（已确认并修复）
+
+批次 1b 修好地址之后，复查导出的 GLK1 字节时发现**更靠上游的问题**：6.12.58 是 59 份
+导出 profile 中**唯一**一份不含任何 `route.*` section 的。`route.fd_graph` 与 12 个几何
+字段名在字节里完全不存在，也就是说 native 侧 `FdGraphLayout` 全为空。
+
+根因：`FdGraphConfig.from()` 用**裸字段名**（`eventpoll_size` 等）去问 resolver，而
+`ProfileResolver.nativeValue` 只在路径带 route 前缀（`fd_graph.`）时才回写 route 字段。
+12 个查询全部落空 → `entries()` 为空 → `routeSection()` 返回 null → 该 section 不写出。
+resolver 里那段 `if (path.startsWith("fd_graph."))` 因此是**死代码**，因为没有任何调用方
+传过带前缀的路径。
+
+影响不止导出器：`AndroidProfileConfigController.buildNativeDocument` 走同一个
+`ProfileResolver.nativeValue`，所以 App 运行期送给 native 的文档同样缺这 12 个字段。
+即使批次 1b 的地址正确，真机门禁也会因为 route 几何为空而失败。
+
+之所以一直没被发现：没有任何断言检查「序列化后的文档是否包含其 active route 的 section」。
+`NativeDocumentEquivalenceTest` 只比对哈希，`BuiltinProfilesTest` 校验的是 HOCON profile
+（那里几何是全的），两者都不看序列化结果。
+
+修复：给 12 个查询加上 `fd_graph.` 前缀，与 `MulticastConfig` 的 `mcast.` 约定一致。
+导出体积 1876 → 2142 字节，`route.fd_graph` 与 12 个字段名全部出现，且 59 份 profile
+现在都带自己的 route section。
+
+回归防护：`ProfileResolverTest` 增加一条向量，断言裸名经 resolver 往返后
+`eventpollSize`/`epitemEp`/`epitemFllink` 有值。已做变异验证——把前缀去掉后，**恰好这条**
+测试失败（19 tests completed, 1 failed），确认它真的能挡住该缺陷。
 
 ### 批次 3：构建与静态门禁（已完成）
 
