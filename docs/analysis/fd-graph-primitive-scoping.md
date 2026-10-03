@@ -600,6 +600,50 @@ undefined8 FUN_0022058c(void) { return DAT_00268010; }   /* 单个全局指针 *
 > `DAT_00268010` 指向区域的**总大小与该表在其中的基址**未确认；
 > 上述偏移均为相对 `DAT_00268010` 的相对量。批次 D 需实测确认后再硬编码。
 
+### 2.12 受控页是「用户态暂存区」，表在用户态建好后喷入内核
+
+`DAT_00268010`（= `FUN_0022058c()` 返回的喷洒基址）由 `kernelsnitch_address_phase`
+（`FUN_0021f1e0`，Ghidra 建议名）**从参数接收**，并非自己分配：
+
+```c
+/* annotated.c:3572 —— kernelsnitch_address_phase */
+void FUN_0021f1e0(undefined8 param_1) {
+  DAT_0026800c = FUN_00229bb4();
+  FUN_0021a820(FUN_0021f3e8);
+  DAT_00268018 = 1;  DAT_00268020 = 1;
+  DAT_00268010 = param_1;              /* ← 喷洒基址 = 调用方传入 */
+  lVar1 = FUN_0025a55c(800, 4);       /* calloc(800, 4) */
+  ...
+}
+```
+
+唯一实际调用点（`annotated.c:4586`，位于 `pipe_flags_candidate`）传入的是：
+
+```c
+lVar6 = FUN_0025a670(0x10000);        /* malloc(0x10000) = 64 KiB */
+FUN_002580f4(lVar6, 0x42, 0x10000);   /* memset(buf, 'B'(0x42), 64 KiB) */
+FUN_0021f1e0(lVar6);                  /* → DAT_00268010 = buf */
+```
+
+**因此 `DAT_00268010` 是一个 64 KiB 的用户态缓冲**，被 `memset` 成 `0x42`。
+§2.11 的 16 项表写在其 `base+0xF80 … base+0x1708`（跨度 `0x788`，远小于 64 KiB），
+完全落在用户态范围内。据此可确定完整次序：
+
+1. **用户态建表**：在 64 KiB 缓冲里写 16 项
+   `{ page + 0x100 + i*0x800, uVar30 + 偏移 }`，
+   其中 `page` 是 `PIPE_TARGET page=0x%016llx` 打印的**内核地址**
+   （由 kernelsnitch 碰撞扫描得到）。
+2. **回收内核管环**：`F_SETPIPE_SZ` 两级缩放（§2.7）释放旧 `pipe->bufs`。
+3. **喷入内核**：把用户态表复制进刚被释放的环内存。
+4. **触发写入**：240 路 `write`（§2.9）经被重定向的 buffer 指针落到目标。
+
+即：表在**用户态构造**，经回收窗口**移植进内核**，再由普通 `write` 触发 ——
+这解释了为什么写入目标只是**普通 fd**（§2.9）而仍能到达内核对象。
+
+> 步长 `0x800`（= profile `pipe_object`）出现在**表项的值**里
+> （`page + 0x100 + i*0x800`），即被控对象在内核侧的间距；
+> 而表项在内核环内的槽距由 `pipe_slots` / `pipe_ring` 决定。两者不是同一量。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
