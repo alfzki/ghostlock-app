@@ -687,6 +687,48 @@ FUN_0021f1e0(lVar6);                  /* → DAT_00268010 = buf */
 > 反编译产物当成 `preload.so` 本身。二者都靠**哈希/来源核对**才暴露。
 > 凡引用外部产物，必须先比对 MD5/SHA-256。
 
+### 2.14 修正（批次 D 前）：fd 图规模是 ~24.5k 个 fd，不是 240
+
+`late_refs` 阶段（`annotated.c:5090`–`5175`）暴露了一个**此前完全遗漏的量级**：
+
+```
+FD_LIMIT_INITIAL cur=%lu max=%lu graph_only=%d          ← graph_only = 0x60a0
+late_refs fd_preflight current=%d graph_additional=%d required_total=%d
+           limit_cur=%llu limit_max=%llu
+```
+
+- `FUN_00254bc0(7, &rlim)` = `getrlimit(RLIMIT_NOFILE)`（7）。
+- 前置检查：`rlim_cur >= 当前 fd 数 + 0x60a0`，否则**致命退出**。
+- `0x60a0 = 24736 = graph_edges (96 × 256 = 24576) + 160`。
+- 另有 `0x7ffff = 524287` 的 fd 上限钳制与 `0x100001` 边界判断。
+
+**因此「fd graph」的宽度是 `graph_edges` 量级（≈24,576 个 fd，一个边一个 fd），
+而 `0xf0 = 240` 只是 `reclaim` 表里 `pipe_buffer` 槽的数量。**
+两者是不同维度：240 是槽位数，24,576 是图边数。
+本文档 §2.9/§2.10 描述的「240 根管道」只覆盖 reclaim 表，**不构成整个投递路径**。
+
+> **这推翻了批次 D 的初始范围估计**（按 240 根管道规划）。
+> 实际还需：抬 `RLIMIT_NOFILE` 至 ≥ `当前 + 24736`、批量创建并注册 ≈24.5k 个 fd、
+> 构建 `epitem.fllink` 宽图。**此项若遗漏，做出的图比目标窄约两个数量级。**
+
+另注：存在**两个**暂存缓冲区 —— 不同阶段分别 `memset` 为 `0x42`('B') 与 `0x4b`('K')。
+
+### 2.15 `static_layout`：几何常量的第二个独立来源
+
+`late_refs` 的 `static_layout` 日志串（`annotated.c:5097`）：
+
+```
+eventpoll_size=0xd0 gen=0xa8 refs=0xb0 depth=0xb8 refcount=0xbc
+epitem_ep=0x48 epitem_fllink=0x50 mcast_sources=14 mcast_kernel_size=0xf8
+pipe_buffer=0x28 pipe_flags=0x18 pipe_slots=32 pipe_ring=0x500 pipe_object=0x800
+```
+
+与 §2.6.3 从 **BTF** 独立得到的值**逐项一致**。两个互不依赖的来源
+（`preload.so` 静态串 / 目标内核 BTF）相互印证，几何可信度已足够高。
+
+注意其中 `mcast_sources=14`、`mcast_kernel_size=0xf8` 两项**不在**本仓库 profile 中 ——
+它们属于 `multicast_waiter` 家族的常量，`fd_graph` 未引用。
+
 ## 3. 真实机制（综合 §2）
 
 1. **取地址**：`direct_map_base` + `selinux_image_off` → `direct_map_alias=0xffffff80027c6960`，
