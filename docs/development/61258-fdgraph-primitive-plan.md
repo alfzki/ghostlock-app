@@ -160,9 +160,12 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
    `preload.so` 串里的 `0xa8/0xb0/0xb8/0xbc` 是通用值；main 分支源码
    推算与该串**不自洽**（`refs` 若在 `0xb0` 占 16B 至 `0xc0`，与
    `depth=0xb8` 冲突），故不可替代。需 6.12.58 的 BTF 或真机读回（批次 B 前置）。
-5. **含义已确认、写入点未定位**：`bit4` = `PIPE_BUF_FLAG_CAN_MERGE`（scoping §2.6.1，
-   置位后 `pipe_buf_merge()` 可不拷贝直接串接页，是把受控页挂进管环的前提）。
-   在 `pipe_buffer.flags`(0x18) 上的**具体写入指令**仍未定位。
+5. **含义已确认；写入点改为实现期实测**：bit4 = `PIPE_BUF_FLAG_CAN_MERGE`
+   （scoping §2.6.1，置位后 `pipe_buf_merge()` 可不拷贝直接串接页，
+   是把受控页挂进管环的前提）。
+   在 `pipe_buffer.flags`(0x18) 上的**具体写入指令静态追查已放弃** ——
+   两个候选均被证伪（scoping §2.5.5 第 3 条），该 stripped 二进制上的
+   偏移字面量搜索不可靠。**改为批次 D 实现期间用实测/打点确认。**
 
 **批次 D 的设计约束已明确**：写入目标是普通 fd + 命令字驱动，
 不涉及把内核地址当 fd；建图需先扩 `RLIMIT_NOFILE` 并批量开 fd。
