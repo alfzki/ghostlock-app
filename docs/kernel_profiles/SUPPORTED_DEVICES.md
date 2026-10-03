@@ -23,6 +23,7 @@ bypass there as well, so it saves time even where it isn't required.
 
 | Kernel                                                 | Devices                                                          |
 |--------------------------------------------------------|------------------------------------------------------------------|
+| `5.15.119-android13-8-g6ff5097ee32a-ab1764665171`  | MEIZU 21 Note                                                  |
 | `5.15.167-android13-8-00017-gb1f32b310a30-ab12826353`  | Red Magic 8 Pro                                                  |
 | `5.15.189-android13-8-00016-g51bba4309aac-ab14546557`  | Sony Xperia 1 V                                                  |
 | `5.15.189-android13-8-00004-g1c3825f8ac0a-ab14110541`  | Sony Xperia 1 V                                                  |
