@@ -328,6 +328,30 @@ if (redirect(attempt=1) && read("/sys/fs/selinux/enforce") == '1') {
 | **用户态暂存区（新增）** | 批次 D，`malloc(0x10000)` + `memset 0x42` | `FdGraphRoute` | 建表 → 喷入内核 | **必须晚于喷洒完成** | `free()` |
 | **槽位引用（新增）** | 批次 D | worker 线程 | 主线程**不得**在 free 后访问 | worker 停止访问后 | 内核侧（受控对象） |
 
+#### 4.0 实现前置核查（批次 D 开工前必读）
+
+对 `src/core/support/native_resource.hpp` 现有 RAII 类型做了核查：
+
+| 需求 | 现有支撑 | 结论 |
+|---|---|---|
+| **批量持有 24,576 个 epoll fd** | 仅有 `BorrowedFd` / `ScopeExit` / `UniqueFd` / `MappedRegion` / `PthreadOwner` / `ChildProcess` | ❌ **无批量 fd 容器**。`UniqueFd` 是单 fd 语义，无法承载 24576 个 |
+| fork 投递（第 16 步） | `ChildProcess`（`State{Empty,Running,Reaped,Transferred}` + `release_to_handoff()`） | ✅ **已覆盖**，且 `release_to_handoff()` 语义正好匹配 `redirect` 的交接 |
+| 线程 + 停止/ join（第 14 步） | `PthreadOwner`（`request_stop()` / `join()` / `release()`） | ✅ 已覆盖 |
+| 两张 0x780 表 + 64 KiB 暂存区 | `MappedRegion::map_anonymous` | ✅ 已覆盖 |
+
+**⚠️ 因此批次 D 需新增一个批量 fd 所有者**（上表「批量 fd 数组」在代码中**尚不存在**）。
+两条要求：
+
+1. **不得**手搓裸 `int[]` + 手动 `close()` 循环 —— 那样会绕过 §4 的所有权表，
+   在 `disarm()`/`destroy()` 分支上极易漏释放（AGENTS.md 生命周期审查的核心风险）。
+2. 新类型须落进 `support/native_resource.hpp`，与 `UniqueFd` 同风格
+   （RAII + `release_to_process_lifetime()` 逃生口），并**在 §4 表中补一行**：
+   所有者 `FdGraphRoute`、访问者「仅建链期」、终结点 `destroy()` 且晚于
+   `pipe_worker` join、释放者「析构逐个 close，stuck 时并入兜底」。
+
+> `heap_context.h:26` 的 `std::vector<int32_t> memfds` 是**内存映射 fd**，
+> 非 route 所有的 RAII 容器，**不可复用**（所有权语义不同）。
+
 #### 4.1 新增对象带来的三条生命周期约束
 
 批次 C 确认了投递链的形状（scoping §2.9–§2.12），由此产生三条
