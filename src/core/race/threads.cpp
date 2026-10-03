@@ -181,7 +181,7 @@ ghostlock::route::RouteStatus ghostlock::race::PiRace::run() noexcept {
     errno = 0;
     long rq = support::futex_op(&wait_futex, FUTEX_CMP_REQUEUE_PI, 1,
                                 reinterpret_cast<void *>(1),
-                                &target_futex, 1);
+                                &target_futex, 0);
     pr_info("[route] CMP_REQUEUE_PI ret=%ld errno=%d; waiting route_done\n",
             rq, errno);
     /* TODO(pi-timeout-01): This wait has no deadline. A route that stalls in
