@@ -26,6 +26,10 @@ spelling and is reported as LAYOUT-SHIFT for manual review.
 Each target lists the legacy demangled spelling and the namespace-qualified
 spelling; whichever is present in a binary is used, so the tool keeps working
 across the CPP12 namespace migration.
+
+A target absent from BOTH binaries reports STALE and is skipped: the function no
+longer exists upstream, so there is no drift to compare. A target present on only
+one side reports MISSING and fails, because that is a real change.
 """
 import glob
 import os
@@ -179,6 +183,12 @@ def main():
         base_name = resolve(base, candidates)
         cur_name = resolve(cur, candidates)
         if base_name is None or cur_name is None:
+            if base_name is None and cur_name is None:
+                # Absent from both: the target no longer exists upstream, so
+                # there is no drift to report. Failing here would make the gate
+                # unpassable forever after any refactor that drops a function.
+                print(f"STALE {label}: not present in either binary")
+                continue
             print(f"MISSING {label}: base={base_name is not None} cur={cur_name is not None}")
             failed += 1
             continue
