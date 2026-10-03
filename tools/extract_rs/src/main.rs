@@ -1,9 +1,47 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, clap::ValueEnum)]
+pub enum RouteKind {
+    TcpZerocopy,
+    SelectStack,
+    MulticastWaiter,
+    FdGraph,
+}
+
+impl std::str::FromStr for RouteKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "tcp_zerocopy" => Ok(Self::TcpZerocopy),
+            "select_stack" => Ok(Self::SelectStack),
+            "multicast_waiter" => Ok(Self::MulticastWaiter),
+            "fd_graph" => Ok(Self::FdGraph),
+            _ => Err(format!("invalid route: {}. Valid: tcp_zerocopy, select_stack, multicast_waiter, fd_graph", s)),
+        }
+    }
+}
+
+impl std::fmt::Display for RouteKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TcpZerocopy => write!(f, "tcp_zerocopy"),
+            Self::SelectStack => write!(f, "select_stack"),
+            Self::MulticastWaiter => write!(f, "multicast_waiter"),
+            Self::FdGraph => write!(f, "fd_graph"),
+        }
+    }
+}
+
+fn parse_route_kind(s: &str) -> Result<RouteKind, String> {
+    s.parse()
+}
+
 
 use ghostlock_extract::analysis;
 use ghostlock_extract::boot::{BootImage, MTK_DEFAULT_PHYS_LOAD, MTK_VADDR_BASE};
@@ -12,7 +50,7 @@ use ghostlock_extract::derive::{
     PSELECT_ROUTE_NFDS, derive_cred_5x, derive_nf_logger_registration, derive_pselect_layout,
     ensure_rtmutex_43499_unpatched, multicast_waiter_off, relative_symbols,
 };
-use ghostlock_extract::error::{ExtractError, Result};
+use ghostlock_extract::error::ExtractError;
 use ghostlock_extract::fdt::{recover_kernel_phys_load, recover_kernel_phys_load_from_uefi};
 use ghostlock_extract::iomem;
 use ghostlock_extract::kallsyms;
@@ -55,7 +93,7 @@ struct Cli {
     #[arg(long, value_parser = ["text", "json", "conf"], default_value = "text")]
     format: String,
     /// route written to --format conf; defaults to the analysis suggestion
-    #[arg(long, value_parser = ["tcp_zerocopy", "select_stack", "multicast_waiter"])]
+    #[arg(long, value_parser = ["tcp_zerocopy", "select_stack", "multicast_waiter", "fd_graph"])]
     route: Option<String>,
     /// treat every unresolved symbol as optional (emit 0)
     #[arg(long)]
@@ -76,7 +114,7 @@ struct Cli {
     work_dir: Option<PathBuf>,
 }
 
-fn parse_int(text: &str) -> Result<u64> {
+fn parse_int(text: &str) -> std::result::Result<u64, ExtractError> {
     let trimmed = text.trim();
     if let Some(hex) = trimmed
         .strip_prefix("0x")
@@ -132,7 +170,7 @@ fn download_progress() -> Option<payload_extract::input::ProgressCallback> {
 /// Returns the file-based kallsyms source (--kallsyms or a readable
 /// /proc/kallsyms), or None when the caller should recover symbols from the
 /// kernel image instead.
-fn obtain_kallsyms(provided: Option<&Path>) -> Result<Option<PathBuf>> {
+fn obtain_kallsyms(provided: Option<&Path>) -> std::result::Result<Option<PathBuf>, ExtractError> {
     if let Some(provided) = provided {
         if !provided.is_file() {
             return Err(ExtractError::new(format!(
@@ -152,7 +190,7 @@ fn obtain_kallsyms(provided: Option<&Path>) -> Result<Option<PathBuf>> {
 }
 
 /// Read and parse a kallsyms text file.
-fn parse_kallsyms_file(path: &Path) -> Result<Kallsyms> {
+fn parse_kallsyms_file(path: &Path) -> std::result::Result<Kallsyms, ExtractError> {
     let parsed = std::fs::read_to_string(path)
         .map_err(|err| ExtractError::new(format!("cannot read kallsyms: {err}")))?;
     kallsyms::parse(&parsed)
@@ -164,7 +202,7 @@ fn resolve_kallsyms(
     boot: &BootImage,
     btf_at: Option<(usize, usize)>,
     cli: &Cli,
-) -> Result<Kallsyms> {
+) -> std::result::Result<Kallsyms, ExtractError> {
     if let Some(path) = obtain_kallsyms(cli.kallsyms.as_deref())? {
         if cli.kallsyms.is_some() {
             // an explicit --kallsyms fails loudly instead of falling back
@@ -185,7 +223,7 @@ fn resolve_kallsyms(
         .map_err(|err| ExtractError::kallsyms(err.to_string()))
 }
 
-fn run(cli: &Cli) -> Result<i32> {
+fn run(cli: &Cli) -> std::result::Result<i32, ExtractError> {
     let mut boot_path = cli.image.clone();
     let mut xbl_path = cli.xbl_config.clone();
     let mut uefi_path = cli.uefi.clone();
@@ -576,7 +614,7 @@ fn run(cli: &Cli) -> Result<i32> {
         // Candidate output: emit everything the image actually yielded and
         // leave the rest out. Whether the result is complete enough to run is
         // decided by the app's pre-execution validation, not here.
-        let route = match cli.route.as_deref() {
+        let route = match cli.route.as_ref().map(|r| r.to_string()) {
             Some(route) => Some(route.to_string()),
             None => {
                 let paths =

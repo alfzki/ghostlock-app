@@ -198,6 +198,17 @@ internal class AndroidProfileConfigController(
                     invalid += "$routePrefix.buffer_size"
                 }
             }
+
+            "fd_graph" -> {
+                for (field in RouteFdGraphFields) {
+                    val current = value("$routePrefix.$field")
+                    if (current == null || current == 0L) {
+                        invalid += "$routePrefix.$field"
+                    } else if (current < 0L || current > UInt.MAX_VALUE.toLong()) {
+                        invalid += "$routePrefix.$field"
+                    }
+                }
+            }
         }
         if (fallbackTo != null && fallbackTo != "none" && fallbackTo !in ProfileConfig.Routes) {
             invalid += "fallback.to"
@@ -911,6 +922,12 @@ internal class AndroidProfileConfigController(
         )
         private val RouteMulticastFields = listOf(
             "buffer_size", "task_offset", "lock_offset",
+        )
+        private val RouteFdGraphFields = listOf(
+            "eventpoll_size", "epitem_ep", "epitem_fllink",
+            "pipe_buffer", "pipe_flags", "pipe_slots", "pipe_ring",
+            "pipe_object", "graph_width", "graph_fanout", "graph_edges",
+            "objects_per_order3",
         )
         private const val SizeofU32 = 4L
         private const val SizeofU64 = 8L
