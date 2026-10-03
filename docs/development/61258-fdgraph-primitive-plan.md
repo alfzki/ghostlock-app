@@ -93,7 +93,7 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 
 | 文件 | 改动性质 |
 |---|---|
-| `src/core/route/fd_graph_route.cpp` | 重写 `execute()`；新增 `pipe_worker` 线程、240 根管道、fd 表（drain + reclaim 各 `0x780`）、64 KiB 暂存区 |
+| `src/core/route/fd_graph_route.cpp` | 重写 `execute()`；新增 `pipe_worker` 线程、**24,576 个嵌套 epoll fd（width 96 × fanout 256）**、240 根管道、fd 表（drain + reclaim 各 `0x780`）、64 KiB 暂存区 |
 | `src/core/route/fd_graph_route.h` | 新增成员（worker 句柄、fd 表、暂存区、哨兵、统计） |
 | `src/core/profile/model.h` | `FdGraphLayout` 增 4 个 `optional<uint32_t>` |
 | `src/core/profile/binary.cpp` | 字段表增 4 项（**顺序须与 Kotlin 一致**） |
@@ -192,51 +192,90 @@ struct eventpoll  size = 0xd0 (208)
 
 ### 批次 D：实现回收 + 受控写入
 
-批次 C 已把投递链各环的**取值**确认完毕，因此本批不再需要取证，
-按 scoping §2.7–§2.10 照做即可。依赖顺序与已确认取值：
+> **⚠ 2026-10-03 大幅修正**：原计划把批次 D 理解为「240 根管道」。
+> 取证（scoping §2.14/§2.16/§2.18）证明 **240 只是 `pipe_buffer` 回收表槽数**，
+> 与「24,576 个嵌套 epoll 构成的宽 `epitem.fllink` 链」是**两个独立机制**。
+> 按原计划实现，图会窄约两个数量级。以下为修正后的顺序。
 
-1. **fd 表**（§2.10）：`malloc(0x780)`（或等效 `mmap`），`memset 0xff`；
+批次 C 已把投递链各环的**取值**确认完毕，因此本批不再需要取证，
+按 scoping §2.7–§2.18 照做即可。依赖顺序与已确认取值：
+
+1. **抬 `RLIMIT_NOFILE`**（scoping §2.14）：`getrlimit` 后要求
+   `cur >= 当前占用 + 0x60a0 (24736)`，不足则 **`exit(-1)`** 致命退出。
+   **此步在前**，否则后续 `epoll_create1` 会在中途 `EMFILE`。
+2. **构建嵌套 epoll 图**（scoping §2.16，**原计划遗漏**）：
+   外层 `width = 96 (0x60)`、内层 `fanout = 256 (0x100)`，每轮
+   `epoll_create1(EPOLL_CLOEXEC)` 新建实例，再用
+   `epoll_ctl(new, EPOLL_CTL_ADD, prev_epoll_fd, &event)` 把**上一个 epoll 的 fd**
+   注册进去；`epoll_ctl` 返回非 0 即致命退出。
+   合计 `96 * 256 = 0x6000 = 24576` 个 epoll。
+   `epoll_event.data` 由 `{uVar33, prev_fd}` 组成。
+   日志：`GRAPH_READY width=96 fanout=256 edges=24576`。
+3. **fd 表**（§2.10）：`malloc(0x780)`（或等效 `mmap`），`memset 0xff`；
    240 槽 × 8 字节步长。**空槽初值必须是 `-1`，不得用 `0`**
    —— stub 现写 `0`，等于把 fd 0（stdin）当有效管道。
-2. **每槽建管道**（§2.10）：240 根，fd 写回对应槽位。
-3. **两级缩放**（§2.7）：`fcntl(fd, F_SETPIPE_SZ, n<<12)`，
+4. **每槽建管道**（§2.10）：240 根，fd 写回对应槽位。
+5. **两级缩放**（§2.7）：`fcntl(fd, F_SETPIPE_SZ, n<<12)`，
    `reclaim_small` 用 `n=2`（8 KiB）、`reclaim_expand` 用 `n=0x20`（128 KiB）；
    每次都必须 `fcntl(fd, F_GETPIPE_SZ)` 回读并要求 `observed == requested`。
    **失败是致命的**（原实现记 `resize_fail` 后 `exit(-1)`），
    故必须在投递前处理失败，不可失败后重入。
-4. **`late_refs`**：诱饵 unlink + fd preflight。
-5. **槽位选取与 `RECLAIM_HIT`** 两模式（`mode=pipe` / `mode=zero`）。
-6. **`fake_fllink`**（§2.8）：`base | 0x108`（`LIST_POISON1 + 8`）。
-7. **`CAN_MERGE` 写入**（§2.6.1）：语义已确认（置位后 `pipe_buf_merge()`
-   可不拷贝直接串接页），但**指令位置未知且静态追查已封顶**（三个候选全部证伪）——
-   本批**用实测/打点确认**，不要靠猜偏移。
-8. **payload 投递**（§2.9）：命令字 `'W'` 门控；
-   240 路 `write(fd_table[i], payload, len)`，**每次必须返回完整长度**，
-   否则整轮放弃。
-9. **回读**（§2.9）：`pread64` 按**槽位偏移**校验（日志 `PIPE_OBSERVED`），
-   而非顺序 `read`。
-10. **`pipe_worker` 线程模型**：持槽 + 与主线程握手（§2.5.3 的自旋点）。
-11. 撤销 stub 把内核地址当 fd 的 `splice()`（恒 `EBADF`）。
+6. **`late_refs`**：诱饵 unlink + fd preflight。
+7. **槽位选取与 `RECLAIM_HIT`** 两模式（scoping §2.18.2，判据已精确）：
+   - `pipe_flags_candidate`（`param_1 & 1 == 0`）：需 `chain_hit == 1`
+     **且** `bit4 == 1`，日志 `FLAGS_CANDIDATE` → `RESULT PASS`；
+   - `zero_byte_redirect`（`param_1 & 1 == 1`）：需 `chain_hit == 1`，日志 `CHAIN_HIT`。
+   `fake_count = 0x10`（16 项重定向表）。
+8. **`fake_fllink`**（§2.8）：`base | 0x108`（`LIST_POISON1 + 8`）。
+9. **`CAN_MERGE`：本批不再需要定位写点**（scoping §2.18.2，**原第 7 项作废**）。
+   参考实现是在喷入后**读回** `*(u8 *)(pipe_slot + 0x166)` 并测 bit 4，
+   即只需保证**偏移 `0x166` 的 bit 4 落在我们喷入的数据里**。
+   喷入数据的构造因此必须把该偏移的 bit 4 置位 —— 这是**数据构造要求**，
+   不是**指令写入点定位要求**。原先三个被证伪的静态候选无需再追。
+10. **payload 投递**（§2.9）：命令字 `'W'` 门控；
+    240 路 `write(fd_table[i], payload, len)`，**每次必须返回完整长度**，
+    否则整轮放弃。
+11. **回读**（§2.9）：`pread64` 按**槽位偏移**校验（日志 `PIPE_OBSERVED`），
+    而非顺序 `read`。
+12. **`pipe_worker` 线程模型**：持槽 + 与主线程握手（§2.5.3 的自旋点）。
+13. **顺序不变量 `close_after_trigger=1`**（scoping §2.18.1，**硬约束**）：
+    epoll fd 必须在**触发之后**才 `close`。先 close 再触发会让被摘除的 epitem
+    提前离开链，内核不再遍历到投毒项 —— 必失败。
+14. **`redirect` 的 fork 模型**（scoping §2.17）：投递由**子进程**执行，
+    父进程带 `timeout_s = 0xf0 (240s)` 等待并回收 `rc`。
+15. 撤销 stub 把内核地址当 fd 的 `splice()`（恒 `EBADF`）—— **批次 A 已完成**。
 
-> 与批次 A 的关系：批次 A 的第 1 项（删无效 `splice()`）会被本批第 11 项覆盖。
-> 但**批次 A 仍应先单独跑一次门禁** —— 它是「不写是否就不崩」的唯一干净对照，
+> 与批次 A 的关系：批次 A 已单独完成并提交（`7e84335`），第 15 项由其覆盖。
+> 批次 A **仍应先单独跑一次门禁** —— 它是「不写是否就不崩」的唯一干净对照，
 > 这个因果结论无法在机制实现后再获得。
 
 ### 批次 E：独立验证
 
-用 `generation`/`refs`/`depth`/`refcount` 哨兵 + 经 carrier 的 readback
-替换 `*verify == value` 自读回（`fd_graph_route.cpp:267`）。
+**判据已由 scoping §2.17.1 改定**：参考实现读 **`/sys/fs/selinux/enforce`**，
+首字节 `!= '1'` 即视为写入生效；失败重试一次，仍失败则 `return -1`。
 
-**依赖**：① 批次 D 已实现（哨兵挂在投递路径上）；
-② 批次 B 的 4 个偏移 —— **已由 6.12.58 BTF 确认**（`f71f37b`），
-profile 与 wire 均已带值，故此项**不再是阻塞**。
+```c
+if (redirect(attempt=1) && read("/sys/fs/selinux/enforce") == '1') {
+    if (redirect(attempt=2) && read("/sys/fs/selinux/enforce") == '1') return -1;
+}
+```
 
-**成功判据**：用 `generation`/`refs`/`depth`/`refcount` 哨兵 + 经 carrier 的
-readback 替换 `*verify == value` 自读回（`fd_graph_route.cpp:267`）。
-**在批次 E 落地前**，批次 D 先用 `preload.so` 同款口径：
+**这必须替换 stub 的 `*verify == value` 自读回**（`fd_graph_route.cpp:267`）——
+自读回经由同一次写读回目标，**无法区分「写到目标」与「写到邻居」**，
+它不是较弱形式的验证，而是**不构成验证**。
+
+批次 B 的 `generation`/`refs`/`depth`/`refcount` 哨兵**保留用于诊断**
+（参考实现的 `RACE` 行确实打印 `generation` 与 `depth`），
+但**不再是验收判据**，且批次 E **无需新增 profile 字段**。
+
+**依赖**：① 批次 D 已实现；② `/sys/fs/selinux/enforce` 可读。
+② 不再依赖批次 B 的哨兵挂载位置，故依赖关系较原计划更松。
+
+**在批次 E 落地前**，批次 D 先用 `preload.so` 同款口径记录诊断量：
 每次 `write` 返回全长 + `pread64` 按槽位偏移读回（`PIPE_OBSERVED`），
 记为 `chain_hits`；**不以** `*verify == value` 为准（stub 现状即此法，无区分力，
 见 scoping §2.5.2 与门禁记录中 `chain_hits=0` 的教训）。
+这些仅为**诊断**，不是验收判据 —— 验收判据见上（`/sys/fs/selinux/enforce`）。
 
 ### 批次 F：真机门禁
 
@@ -249,6 +288,7 @@ readback 替换 `*verify == value` 自读回（`fd_graph_route.cpp:267`）。
 | `epoll_fd` / `pipe_read` / `pipe_write` | `prepare()` | `FdGraphRoute`（`UniqueFd`） | consumer 线程 | `destroy()` | `reset()`；stuck 时 `retain_for_process_lifetime()` |
 | `consumer_thread` | `prepare()` | `PthreadOwner` | `disarm()` | join 后 | `release()` |
 | **`pipe_worker`（新增）** | 批次 D | `PthreadOwner` | 主线程等待其 payload 写 | **必须先于 pipe fd 关闭** | `request_stop()`+`join()` |
+| **24,576 个嵌套 epoll fd（新增，批次 D 第 2 步）** | 批次 D，`epoll_create1(EPOLL_CLOEXEC)` | `FdGraphRoute`（批量 fd 数组） | **仅** `epoll_ctl` 建链期间访问 | `disarm()`/`destroy()`，**且必须晚于 `pipe_worker` join** | 逐个 `close()`；数量大，需分批释放并检查 `EBADF` 不影响其余 |
 | **240 根管道（新增）** | 批次 D，`pipe2()` | `FdGraphRoute` | worker 经 `table[i]` 取 fd | `disarm()`/`destroy()` | 逐个 `close()`；stuck 时并入兜底 |
 | **fd 表（新增，两张）** | 批次 D，`malloc(0x780)` | `FdGraphRoute` | worker **仅在投递窗口内** | `destroy()` | `free()` |
 | **用户态暂存区（新增）** | 批次 D，`malloc(0x10000)` + `memset 0x42` | `FdGraphRoute` | 建表 → 喷入内核 | **必须晚于喷洒完成** | `free()` |
