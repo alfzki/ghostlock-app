@@ -320,9 +320,17 @@ struct pipe_buffer {
 
 #### 2.7.1 反编译 C 证实：`worker_pool` 的完整语义（`decompiled/annotated.c:4826`–`4866`）
 
-工作区存在 `preload.so` 的 **Ghidra 反编译产物**
-（`../decompiled/annotated.c`，`pd2502_mt6993_full_2f55ad9c.so`，1051 个函数全恢复，
-镜像基址 `0x200000`、入口 `0x21a780`，与本节反汇编同一二进制）。
+工作区存在一份 **Ghidra 反编译产物** `../decompiled/annotated.c`，覆盖
+`pd2502_mt6993_full_2f55ad9c.so`（1051 个函数全恢复，镜像基址 `0x200000`、
+入口 `0x21a780`）。
+
+> **归因更正（2026-10-03 复核）**：该产物**不是** `preload.so` 本身。
+> 二者 MD5 不同 —— 产物为 `808bee7698171a18f49b0685f4406a24`，
+> `preload.so` 为 `dc76a8956a7c56022674ec1e0f0c420d`，大小 361 KB vs 362,488 B。
+> 入口与基址相同、字符串集与常量一致 ⇒ **同一程序的另一个构建**。
+> 因此下文凡取自 `annotated.c` 的**可读形式**均已回到 `preload.so`
+> 自身反汇编逐条复核，结论不变（对照见 §2.13）。
+
 该函数可读形式为：
 
 ```c
@@ -643,6 +651,39 @@ FUN_0021f1e0(lVar6);                  /* → DAT_00268010 = buf */
 > 步长 `0x800`（= profile `pipe_object`）出现在**表项的值**里
 > （`page + 0x100 + i*0x800`），即被控对象在内核侧的间距；
 > 而表项在内核环内的槽距由 `pipe_slots` / `pipe_ring` 决定。两者不是同一量。
+
+### 2.13 归因复核：`annotated.c` 的结论在 `preload.so` 自身反汇编中逐条落地
+
+§2.7.1 已说明 `annotated.c` 覆盖的是**同一程序的另一构建**。下表把每条取自
+该产物的结论回到 `preload.so` 自身反汇编核对，**结论全部成立**：
+
+| 结论 | 出处 | `preload.so` 反汇编复核 |
+|---|---|---|
+| 两级 resize `F_SETPIPE_SZ` / `F_GETPIPE_SZ` | `FUN_00220f7c` | `0x220fb8: mov w1, #0x407`；`0x220fd0: mov w1, #0x408` |
+| 缩放失败即致命 | `resize_fail` 后 `exit(-1)` | `0x221090: bl 0x21d2f8`（记日志）→ `0x2210ac: bl 0x24094c`（不返回）→ `0x2210b0: mov w0, #-0x1` → `0x2210b4: bl 0x227e40` |
+| `fake_fllink = base \| 0x108` | `uVar30 \| 0x108` | `0x22155c: mov w8, #0x108`；`0x221568: orr x2, x19, x8` |
+| 投递 240 路 | `uVar14 < 0xef` | `0x220880` / `0x2208f0: cmp x24, #0xef` |
+| 每次写为 `write` | `FUN_00254f00` | `0x254f04: mov x8, #0x40`（= 64；入口 `0x254f00` 为 `bti c`） |
+| 命令字 `'W'` 门控 | `local_ec[0] != 'W'` | `0x220bac: cmp w8, #0x57` |
+| 目标为 `fd_table[4]` | `lVar6 = 4` 起遍历 | `0x220bb8: mov w19, #0x4`；`0x220bc8: ldr w0, [x8, x19]` |
+| 两张 `0x780` 表 | `malloc(0x780)` ×2 | `0x2207f8`/`0x22080c: mov w0, #0x780` → `0x2207fc`/`0x220810: bl 0x25a670` |
+| 表项落在全局 `0x2683b0` / `0x2683a8` | `DAT_002683b0` / `DAT_002683a8` | `adrp x28, 0x268000` + `0x220808: str x0, [x28, #0x3b0]`；`adrp x20, 0x268000` + `0x220818: str x0, [x20, #0x3a8]`（**数据全局，非指令地址**） |
+| 表初始化 `0xff`（空槽 = `-1`） | `memset(…, 0xff, 0x780)` | `0x22082c` / `0x22083c: mov w1, #0xff` + `mov w2, #0x780` |
+| 16 项表、步长 `0x800`、槽距 `0x80`、起 `-0x800` | `lVar32 += 0x800`、`lVar27` 循环 | `mov x22, #-0x800` ×1、`adds x22, x22, #0x80` ×1、`#0x1780`/`#0x1788` 存点 ×6 |
+| `kernelsnitch_address_phase` 接收暂存区 | `DAT_00268010 = param_1` | `0x2207f0: mov x0, x21` → `0x2207f4: bl 0x21f1e0` |
+
+另注：**「空槽为 `-1`」并非来自 `mov #-1` 立即数**（全二进制 0 处），
+而是 `memset 0xff` 的自然结果 —— `0x780` 字节全 `0xff` 使每个 8 字节槽
+读作 `0xffffffffffffffff`。此前用「搜 `mov #-1`」验证是**错误方法**，
+已改按 `0xff` 填充核对。
+
+`strings` 亦双向吻合：`reclaim_small` / `reclaim_expand` / `PIPE_TARGET` /
+`pipe_worker` / `collision_shape` 在 `preload.so` 中均存在（各 1–2 处）。
+
+> **方法论教训**：本会话已两次因「同类事物当成同一份」而出错 ——
+> 先是把 Ghidra 建议名 `reclaim_race` 当成机制名，再是把同程序另一构建的
+> 反编译产物当成 `preload.so` 本身。二者都靠**哈希/来源核对**才暴露。
+> 凡引用外部产物，必须先比对 MD5/SHA-256。
 
 ## 3. 真实机制（综合 §2）
 
