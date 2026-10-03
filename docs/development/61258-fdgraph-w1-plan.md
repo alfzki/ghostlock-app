@@ -114,6 +114,26 @@ MTK 的 SoC 回退值 `KIMAGE_TEXT_BASE - MTK_VADDR_BASE` 恰好等于 `P0_PHYS_
 因此批次 1b 取「两者相等」是符合设备事实的，而具体的 `0x80000000` 只因相等而可以取任意值。
 若日后用 mtk-phys.sh 实测出不相等的一对值，必须重新推导 W1 目标地址，不能直接填入。
 
+#### 污染范围审计：确认只影响本 profile
+
+全量扫描 62 份内置 profile 的物理地址字段，确认该污染**没有波及其他设备**：
+
+- 59 份 `kernel_phys_load = null` + 60 份 `kernel_phys_offset = null`，走 SoC 回退，
+  本就不受影响。
+- 只有 3 份带真实数值，逐个核算 `selinux_enforcing` 的目标地址：
+
+| profile | `kernel_phys_load` | `kernel_phys_offset` | 算出的 alias | 判定 |
+|---|---|---|---|---|
+| `6.12.58-android16-6-…-ab15575650-4k` | `0x80000000` | `0x80000000` | `0xffffff80027c6960` | 与真机已验证地址一致 |
+| `6.12.38-android16-5-g1d46253471dd-…` | `0xa8000000` | 缺省 → `P0_PHYS_OFFSET` | `0xffffff802a68a6d0` | 落在 direct map 内，正常 |
+| `6.6.127-android15-8-gb947b5758b2a-…` | `0x40080000` | `0x40000000` | `0xffffff80023fa0e8` | `81b25c0` 的 mtk-phys 实测值，正常 |
+
+其中 `6.12.38` 的 `0xa8000000` 正是 `target.h` 的 `P0_KERNEL_PHYS_LOAD` 常量，非污染产物。
+`6.6.127` 那一对来自 `81b25c0`「MTK physical addresses」的**真机实测**，与本设备
+（两者相等）不同是正常的，因为 moto MTK6893 的内核镜像并非装在 DRAM 基址。
+
+结论：污染仅限 `6.12.58`，批次 1b 的修正即全部范围，无需波及其他 profile。
+
 ### 批次 3：构建与静态门禁（已完成）
 
 | 项 | 结果 |
