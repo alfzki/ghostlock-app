@@ -204,7 +204,13 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
 2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
    `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
    需 BTF 或真机读回交叉验证（批次 B 的前置）。
-3. `0x10`（bit4）在 `pipe_buffer.flags`(0x18) 上的写入点尚未定位。
+3. `0x10`（bit4）在 `pipe_buffer.flags`(0x18) 上的写入点**尚未定位**，
+   且**不要用「向 `[x?,#0x18]` 存值」来搜**：本次已验证该模式在本二进制中
+   大量误命中——`0x224b40`–`0x224c38` 的七个 `str w?, [x27, #0x18]` 属于
+   **HOCON/JSON 解析器的游标**（`ldrsw x8,[x27,#0x18]` → `add #8` → `str`，
+   伴随对 `'l'/'h'/'o'/'c'/'m'/'p'/'s'/'u'/'d'/'i'/'%'` 的 ASCII 比较），
+   与 `pipe_buffer` 无关。定位必须带类型上下文（从 `pipe_buffer` 基址 +
+   槽位索引出发做数据流），不能只凭偏移字面量。
 
 ## 3. 真实机制（综合 §2）
 
