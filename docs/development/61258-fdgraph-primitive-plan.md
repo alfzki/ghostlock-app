@@ -125,24 +125,29 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 供独立验证用。必须同步 native `binary.cpp` 与 Kotlin `FdGraphConfig`（键名逐字一致、
 顺序一致），并更新 golden 哈希。
 
-**前置（当前阻塞）**：这 4 个偏移必须来自 **6.12.58 的 BTF**，三条替代路径均已排除：
+**前置（已解除）**：这 4 个偏移已由 **6.12.58 自身的 BTF** 确认 ——
+`capture/btf.vmlinux`（6,912,706 B，`magic=0xeb9f v1`，`type_len=4,189,380`，
+`str_len=2,723,302`）。来源可信：`work/target_offsets_disasm.conf` 头部声明
+`release = "6.12.58-android16-6-gff10eaa8f8a4-ab15575650-4k"`，且其 `task_struct`
+取值与仓库 profile **逐项一致**。
 
-1. **生产设备读不到**：`ro.build.type=user`、`ro.secure=1` → `adb root` 拒绝，
-   `/sys/kernel/btf/vmlinux` 拒绝读取。
-2. **工作区无 BTF**：`work/target_Image.bin` 是 `ANDR` boot 镜像容器（非裸 kernel
-   Image），6 处 BTF magic 候选**全部通不过 header 校验**；其余目录亦无
-   `boot.img` / `vmlinux` / `*.btf`。
-3. **公开源码不可替代**：`torvalds/linux` main 的 `struct eventpoll` 字段顺序
-   推算与 `preload.so` 串**不自洽**（`refs` 若在 `0xb0` 占 16 B 至 `0xc0`，
-   与 `depth=0xb8`、`refcount=0xbc` 冲突），字段增删会移动偏移。
+```
+struct eventpoll  size = 0xd0 (208)
+  gen             @ 0xa8 (168)
+  refs            @ 0xb0 (176)   8 字节 -> 不是 hlist_head(16B)，故与下一项不重叠
+  loop_check_depth@ 0xb8 (184)   4 字节
+  refcount        @ 0xbc (188)   4 字节
+```
 
-⇒ **需提供 6.12.58 的 `boot.img`**。批次 B 与 E（依赖其哨兵字段）因此阻塞，
-但**不阻塞批次 A 与 D**。
+同一份 BTF **反向印证**了 profile 中已有的 5 个结构派生常量：
+`eventpoll_size=208`、`epitem_ep=0x48`、`epitem_fllink=0x50`、
+`pipe_buffer=0x28`、`pipe_flags=0x18`。
 
-**正面消息**：同一批验证已**正向确认**了 profile 的另外 12 个常量中的 3 个 ——
-`objects_per_order3=16`、`pipe_object=2048`、`pipe_flags=24` 由成功样本的
-`PIPE_TARGET` 日志实参直接印证（scoping §2.11）。几何本身大体可信，
-缺口收敛为这 4 项。
+⇒ **本批已撤销「preload.so 那 4 个值是通用值、未经验证」的判断** ——
+它们对本内核是正确的。
+
+**状态：已完成**（`f71f37b`）。双侧顺序经机械比对一致（`binary.cpp` /
+`FdGraphConfig.entries()` / `RouteFdGraphFields` / profile 四表全等）。
 
 ### 批次 C：补齐机制证据（只读分析，零代码风险）
 
@@ -223,13 +228,15 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
 替换 `*verify == value` 自读回（`fd_graph_route.cpp:267`）。
 
 **依赖**：① 批次 D 已实现（哨兵挂在投递路径上）；
-② 批次 B 的 4 个偏移已由 6.12.58 BTF 确认 —— `generation`/`refs`/`depth`/`refcount`
-正是那 4 个**尚未验证**的字段，故 **E 随 B 一同阻塞**（见 §3 批次 B）。
+② 批次 B 的 4 个偏移 —— **已由 6.12.58 BTF 确认**（`f71f37b`），
+profile 与 wire 均已带值，故此项**不再是阻塞**。
 
-**E 未就绪时的替代口径**：批次 D 的成功判据先用 `preload.so` 同款 ——
+**成功判据**：用 `generation`/`refs`/`depth`/`refcount` 哨兵 + 经 carrier 的
+readback 替换 `*verify == value` 自读回（`fd_graph_route.cpp:267`）。
+**在批次 E 落地前**，批次 D 先用 `preload.so` 同款口径：
 每次 `write` 返回全长 + `pread64` 按槽位偏移读回（`PIPE_OBSERVED`），
-记为 `chain_hits`；**不以** `*verify == value` 自读回为准（stub 现状即此法，
-无区分力，见 scoping §2.5.2 与门禁记录中 `chain_hits=0` 的教训）。
+记为 `chain_hits`；**不以** `*verify == value` 为准（stub 现状即此法，无区分力，
+见 scoping §2.5.2 与门禁记录中 `chain_hits=0` 的教训）。
 
 ### 批次 F：真机门禁
 
@@ -321,7 +328,7 @@ make -C src lint-tidy          # 0 findings
 ## 7. 评审要点
 
 批次 C（只读分析）**已完成**，结论见 scoping §2.4–§2.12。
-当前可执行的是 **A → D**；**B 与 E 因缺 BTF 阻塞**（见 §3 批次 B）。
+当前可执行的是 **D**（A 亦可，但见 §7 的次序建议）；**B 已完成，E 已解锁**。
 
 请确认：
 
@@ -329,9 +336,11 @@ make -C src lint-tidy          # 0 findings
    - A 低风险，且是「不写是否就不崩」的唯一干净对照（批次 D 一旦实现，
      该因果结论就再也拿不到了）。
    - D 已具备全部取值（§3 批次 D 的 11 步），不再有取证前置。
-   - B/E 暂缓，等 `boot.img`。
-2. **`boot.img` 来源**：需要 6.12.58 的 `boot.img`（或可读 BTF 的设备），
-   以解锁 B 与 E。是否可提供？在拿到之前，是否同意 **A → D → F（门禁）** 先走一轮？
+   - B 已完成，E 已解锁，不再有外部依赖。
+2. **批次 D 的实现范围**：本批只做「投递机制」（fd 表 + 240 根管道 + 两级缩放 +
+   240 路 `write` + `fake_fllink` + `pread64` 回读），
+   **不含** `CAN_MERGE` 写入点（静态追查已封顶，须实现期实测）。
+   是否接受这一拆分？
 3. **§4.1 的三条生命周期约束**是否已足够：其中「暂存区必须活过喷洒」
    与「空槽语义 `-1` 而非 `0`」是批次 D 最易写错的两点，
    写错都不会立刻崩（后者是把 stdin 当管道，前者让下次喷洒读到已释放内存）。
