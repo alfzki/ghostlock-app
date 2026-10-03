@@ -196,9 +196,10 @@ worker 线程向该槽写入（`payload_writes`）→ 写入落到 `controlled_p
 
 ### 2.5.5 仍未确认（批次 D 的剩余前置）
 
-1. ~~**`pipe_buffer` 槽位的回收与重占机制**~~ → **回收手段已确认**（见 §2.7）。
-   剩余未确认：重占为受控对象后的**具体布局**（`fake_count` / `fake_fllink`
-   的落点），以及 `EPOLL_CTL_DEL` 在其中的确切角色。
+1. ~~**`pipe_buffer` 槽位的回收与重占机制**~~ → **回收手段已确认**（见 §2.7），
+   **`fake_fllink` 构造已确认**（见 §2.8：`base | 0x108` = `LIST_POISON1 + 8`）。
+   剩余未确认：`fake_count` 的落点、`EPOLL_CTL_DEL` 在其中的确切角色，
+   以及 `+8` 偏移量的选取依据。
 2. **`gen`/`refs`/`depth`/`refcount` 在 6.12.58 上的真值**：
    `preload.so` 串中的 `0xa8/0xb0/0xb8/0xbc` 是通用值，
    需 BTF 或真机读回交叉验证（批次 B 的前置）。
@@ -299,6 +300,47 @@ struct pipe_buffer {
 `pipe_buffer` 槽位的 UAF 窗口，随后该内存被重占为受控对象。
 这解释了为何必须做 `GETPIPE_SZ` 回读：**缩放未生效则整条回收路径作废**，
 故它是必要条件而非可选的确认动作。
+
+### 2.8 指令级：`fake_fllink` 的构造（`LIST_POISON1 + 8`）
+
+`KNOWN_PAGE` 日志点（`0x221560`–`0x221574`）前一行即构造：
+
+```
+22155c: mov  w8, #0x108        ; 264
+221560: adrp x0, 0x206000
+221564: add  x0, x0, #0x26f    ; "KNOWN_PAGE base=0x%016llx fake_fllink=0x%016llx"
+221568: orr  x2, x19, x8       ; fake_fllink = base | 0x108
+22156c: mov  x1, x19           ; base
+221570: str  x2, [sp, #0x138]
+221574: bl   <log>
+```
+
+**常量核对**（v6.12 `include/linux/poison.h`）：
+
+```c
+#define POISON_POINTER_DELTA 0            /* arm64 无 CONFIG_ILLEGAL_POINTER_VALUE */
+#define LIST_POISON1  ((void *) 0x100 + POISON_POINTER_DELTA)   /* = 0x100 */
+#define LIST_POISON2  ((void *) 0x122 + POISON_POINTER_DELTA)   /* = 0x122 */
+```
+
+配合 `include/linux/list.h`：`list_del()` 写 `entry->next = LIST_POISON1`，
+`hlist_del()` 写 `n->next = LIST_POISON1`。故：
+
+**`fake_fllink = base | 0x108 = LIST_POISON1 + 8`**
+
+`base` 为页对齐，故 `|` 与 `+` 等价。这是标准的**链表中毒重定向**手法：
+被删除的 `epitem` 的 `fllink.next` 被写成毒值，当内核随后遍历该链并对其做
+`list_entry(next, struct epitem, fllink)` 反推时，减去的
+`offsetof(epitem, fllink)`（profile `epitem_fllink = 0x50`）会把落点偏移到
+攻击者选定处。
+
+> **推断部分**：`+8` 的具体选取取决于 `base` 的含义与内核后续对该值做的运算，
+> 尚未取得指令级确认；已确认的只是「毒值基址 + 8」这一形式。
+
+紧邻其前的循环（`0x221508`–`0x221538`）以 `0x800`（= profile `pipe_object`）
+为步长向 `[…, #0x1780]` / `[…, #0x1788]` 写两列，疑为受控对象数组的铺设
+（步长与 profile 的 `pipe_object=2048`、`objects_per_order3=16` 相符），
+但寄存器归属未逐一回溯，故仅作线索记录。
 
 ## 3. 真实机制（综合 §2）
 

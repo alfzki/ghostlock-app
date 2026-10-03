@@ -153,8 +153,9 @@ FAKE_WAITER_LOCK_OFF        = 0x58      FAKE_WAITER_WAKE_STATE_OFF       = 0x60
    后 `F_GETPIPE_SZ` **回读校验**（`cmp w0, w22` 不符即失败退出）——
    即日志里的 `resize_sample`。缩容走 `pipe_resize_ring()` 释放旧
    `pipe->bufs`，产生 `pipe_buffer` 槽位 UAF 窗口；回读是必要条件而非可选确认。
-   **仍未确认**：重占为受控对象后的具体布局（`fake_count` / `fake_fllink` 落点），
-   以及 `EPOLL_CTL_DEL` 在其中的确切角色。
+   **仍未确认**：`fake_count` 的落点、`EPOLL_CTL_DEL` 在其中的确切角色、
+   `fake_fllink` 偏移量 `+8` 的选取依据（**毒值形式已确认**，见 scoping §2.8：
+   `fake_fllink = base | 0x108 = LIST_POISON1 + 8`）。
 4. **仍未确认**：`gen`/`refs`/`depth`/`refcount` 四个偏移在 6.12.58 上的真值。
    `preload.so` 串里的 `0xa8/0xb0/0xb8/0xbc` 是通用值；main 分支源码
    推算与该串**不自洽**（`refs` 若在 `0xb0` 占 16B 至 `0xc0`，与
