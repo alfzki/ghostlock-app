@@ -374,12 +374,30 @@ flowchart TD
 - [x] 批次 2b：物理地址复核 —— 确认被构建机 `/proc/iomem` 污染，并给出复现真机地址的正确取值
 - [x] 批次 1b：修正物理地址对 + 同步 golden 哈希
 - [x] 批次 1：解除 `gate`（两文件 + 注释）
+- [x] 批次 2c：`fd_graph` 几何从未写入 native 文档（`FdGraphConfig.from()` 缺 route 前缀）——已修 + 回归测试
 - [x] 批次 3：构建与静态门禁（host tests 通过、lint-tidy 0 finding；无攻击路径改动故不需 `cmp_disasm`）
 - [x] 附加：为物理地址修正补 `address_space_test` 回归向量，防止该污染值再次回填
 - [x] 附加：修复 `cmp_disasm.py` 的 `STALE` / `MISSING` 语义（原实现使强制门禁永远失败）
-- [ ] 批次 4：真机门禁（用户执行）—— 下一步
-- [ ] 批次 5：启用 `vr_guard` + 第二次真机门禁（条件执行，取决于批次 4 的 W1 结果）
-- [ ] 批次 6：归档门禁记录
+- [x] 批次 4：真机门禁 —— **FAIL（强制重启 / kernel_panic）**。批次 1b 与 2c 两项修复均在真机确认生效；
+  阻塞点转移到 `fd_graph` route 的写入原语。记录：
+  `docs/analysis/device-gates/PROFILE-61258-01-20261003-fdgraph-fail.md`
+- [x] 批次 6：归档门禁记录（含 `.native.log` 与 `.pstore.txt` 证据附件）
+- [ ] 批次 7（新）：反汇编 `preload.so` 的 `reclaim_race`，把写入原语缺口从字符串推断升级为指令级事实。
+  scoping 见 `docs/analysis/fd-graph-primitive-scoping.md`
+- [ ] 批次 8（新）：按反汇编结果产出 `fd_graph` 写入原语实施计划（L 级，需评审）
+- [ ] 批次 5：启用 `vr_guard`（**暂缓** —— 依赖 W1，而 W1 当前无法完成）
+
+### 真机门禁结论（批次 4）
+
+真机确认成立的两项（即本计划的主要目标）：
+
+1. **物理地址对已修正**：`target=0xffffff80027c6960`，与 `preload.so` 同机成功记录逐位相同，
+   `delta=0`。
+2. **fd_graph 几何已到达 native**：日志打印出全部 12 个常量。
+
+未能成立：`fd_graph` route 的写入原语为空实现（`splice()` 收到内核地址截断成的非法 fd），
+10 次尝试 `chain_hits=0`，并在约 17 秒后由无关进程触发 kernel_panic。
+**因此 profile 侧已无已知缺陷，但 6.12.58 仍不具备可用状态。**
 
 ### 当前验证证据
 

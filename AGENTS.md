@@ -113,7 +113,8 @@ python3 tools/cmp_disasm.py <baseline-binary> build/native/ghostlock
   S/CPP/U01/NS\* 证据链样例）。
 - `KERNEL-PANIC-01` 是已知环境/时序问题：同构建可 PASS/panic/PASS，判定因果要求同构建
   复现 + 冷机复跑，不要仅凭一次 panic 归因代码。
-- 现实状态：Multicast（5.15）、TCP、Select 三条路径均已由开发者真机验证；新 profile
+- 现实状态：Multicast（5.15）、TCP、Select 三条路径均已由开发者真机验证；**fd_graph（6.12）
+  尚未通过——首次门禁 FAIL，写入原语为空实现且引发 kernel_panic**；新 profile
   未过真机不得标 supported。
 
 ## 文档约定
@@ -128,6 +129,10 @@ python3 tools/cmp_disasm.py <baseline-binary> build/native/ghostlock
   `docs/development/design-philosophy.md`（设计思想，改动前必读）、
   `docs/development/engineering-standards.md`（工程规范，做法与门槛）、
   `docs/development/documentation-standards.md`（文档规范）、`src/core/README.md`。
+- 进行中：6.12.58 / X300 Pro 路线见 `docs/development/61258-fdgraph-w1-plan.md`；
+  首次真机门禁（FAIL，含 kernel_panic 证据）见
+  `docs/analysis/device-gates/PROFILE-61258-01-20261003-fdgraph-fail.md`；
+  `fd_graph` 写入原语缺口分析见 `docs/analysis/fd-graph-primitive-scoping.md`。
 - 历史文档（已从工作树删除，需要时从 git 历史取回：`git show <commit>:<path>`）：
   - `docs/analysis/`：架构/迁移/解耦分析（routes、native-functions、native-cpp-current-uml、
     native-global-state、native-entrypoint-plan、environment-convergence-plan 等）
