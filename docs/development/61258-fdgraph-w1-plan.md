@@ -382,7 +382,11 @@ flowchart TD
   阻塞点转移到 `fd_graph` route 的写入原语。记录：
   `docs/analysis/device-gates/PROFILE-61258-01-20261003-fdgraph-fail.md`
 - [x] 批次 6：归档门禁记录（含 `.native.log` 与 `.pstore.txt` 证据附件）
-- [ ] 批次 7（新）：反汇编 `preload.so` 的 `reclaim_race`，把写入原语缺口从字符串推断升级为指令级事实。
+- [x] 批次 7：反汇编 `preload.so`（stripped，用格式串 xref 定位 syscall thunk 与函数边界）。
+  **推翻了初版 scoping 的核心假设**：写入**不经过** `splice`/`vmsplice`（两者 thunk 存在但
+  `bl` 调用点为 0、数据段无函数指针）；真实机制是 pipe_buffer 槽位回收 + 受控页写入，
+  且**必须做时序扫描**（PASS 运行命中 `delay_us=2`，stub 固定 `delay_us=0` 时 10/10 失败）。
+  另发现 profile 缺 4 个验证用几何字段（`gen`/`refs`/`depth`/`refcount`）。
   scoping 见 `docs/analysis/fd-graph-primitive-scoping.md`
 - [ ] 批次 8（新）：按反汇编结果产出 `fd_graph` 写入原语实施计划（L 级，需评审）
 - [ ] 批次 5：启用 `vr_guard`（**暂缓** —— 依赖 W1，而 W1 当前无法完成）
