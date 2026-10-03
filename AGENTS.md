@@ -132,7 +132,8 @@ python3 tools/cmp_disasm.py <baseline-binary> build/native/ghostlock
 - 进行中：6.12.58 / X300 Pro 路线见 `docs/development/61258-fdgraph-w1-plan.md`；
   首次真机门禁（FAIL，含 kernel_panic 证据）见
   `docs/analysis/device-gates/PROFILE-61258-01-20261003-fdgraph-fail.md`；
-  `fd_graph` 写入原语缺口分析见 `docs/analysis/fd-graph-primitive-scoping.md`。
+  `fd_graph` 写入原语缺口分析见 `docs/analysis/fd-graph-primitive-scoping.md`；
+  写入原语实施计划（**待评审**）见 `docs/development/61258-fdgraph-primitive-plan.md`。
 - 历史文档（已从工作树删除，需要时从 git 历史取回：`git show <commit>:<path>`）：
   - `docs/analysis/`：架构/迁移/解耦分析（routes、native-functions、native-cpp-current-uml、
     native-global-state、native-entrypoint-plan、environment-convergence-plan 等）

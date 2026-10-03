@@ -65,7 +65,10 @@ RECLAIM_HIT mode=zero round=%d delay_us=%u generation=0x%016llx outer_depth=%u z
 | chain_hits | 0 | 1 | **1** | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | bit4_hits | 0 | 0 | **1** | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 
-第二轮 PASS 则在 `delay_us=0` 命中。**结论：命中率依赖精确时序，必须扫描而非固定重试。**
+第二轮 PASS 则在 `delay_us=0` 命中。**结论：命中率依赖精确时序。**
+注意：stub 的 `delays[]`（`fd_graph_route.cpp:248`）**已覆盖同一序列**，
+因此「扫描时序」本身不是缺口 —— 缺口是时序扫描所围绕的回收/重定向机制不存在（见 §4）。
+时序是必要非充分条件。
 
 阶段序列（`stage=` / `event=` 去重后，权威流程）：
 
@@ -112,7 +115,8 @@ target → environment → carrier_preflight → carrier_patch → patch
 | `fllink` | 无 | `KNOWN_PAGE fake_fllink` |
 | `pipe_flags` | 无（只打印偏移 0x18） | `pipe_flags_redirect` 改写 bit4 |
 | 写入 | `splice(..., static_cast<int>(target), ...)` ← 内核地址当 fd，必然 `EBADF` | `pipe_worker` 写受控槽位（**不用 splice**） |
-| 时序 | 固定 `delay_us`，`tries=10` | **扫描 0/1/2/4/8/12/20/32/48/64** |
+| 时序 | **已有**扫描 `{0,1,2,4,8,12,20,32,48,64}`（`fd_graph_route.cpp:248`），但每个 delay 只试 1 次 | 同序列，且每档多次重试 + `tries`/`duration` 统计 |
+| 计数 | `reclaim_hits++` 在 `sp==8` 判断**之外**（`:277`），实际统计的是「vmsplice 返回 8」，与 `preload.so` 的 `RECLAIM_HIT` 语义不同名 | `RECLAIM_HIT` 记录 `generation`/`outer_depth`/`can_merge`/`duration_ns` |
 | 验证 | `*verify == value`（自读回） | `generation`/`refs`/`depth`/`refcount`/`carrier_readback` 独立哨兵 |
 
 ## 5. profile 缺失的 4 个几何字段（新增发现）
@@ -129,7 +133,8 @@ target → environment → carrier_preflight → carrier_patch → patch
 2. 活跃槽位选取与 `RECLAIM_HIT` 两模式判定。
 3. `fake_fllink` 构造 + `pipe_flags`(0x18) bit4 改写。
 4. `pipe_worker` 线程模型：持槽 + `payload_writes` + `resize_sample`。
-5. **时序扫描**取代固定重试。
+5. 每档 delay 的**多次重试与统计**（stub 每档只试 1 次，且 `RACE_SUMMARY` 未记录 `delay_us`，
+   无法定位命中档位）。
 6. 独立验证（哨兵 + carrier readback），替换自读回。
 7. 撤销 stub 中把内核地址当 fd 的 `splice()` 调用（该调用恒 `EBADF`）。
 
