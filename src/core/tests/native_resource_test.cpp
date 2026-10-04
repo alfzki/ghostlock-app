@@ -67,6 +67,47 @@ int32_t main() {
     assert(fcntl(observed, F_GETFD) == -1 && errno == EBADF);
     assert(open_fd_count() == initial_fd_count);
 
+    {
+        int32_t *bulk_fds = new int32_t[4];
+        int32_t saved_fds[4];
+        for (int32_t i = 0; i < 4; i++) {
+            int32_t fds[2];
+            assert(pipe(fds) == 0);
+            bulk_fds[i] = fds[0];
+            saved_fds[i] = fds[0];
+            close(fds[1]);
+        }
+        {
+            ghostlock::support::BulkFdOwner first(bulk_fds, 4);
+            assert(first.valid() && first.size() == 4);
+            assert(first[0] == saved_fds[0] && first[3] == saved_fds[3]);
+            ghostlock::support::BulkFdOwner second(std::move(first));
+            assert(!first.valid() && first.size() == 0);
+            assert(second.valid() && second.size() == 4);
+        }
+        for (int32_t i = 0; i < 4; i++) {
+            assert(fcntl(saved_fds[i], F_GETFD) == -1 && errno == EBADF);
+        }
+    }
+    {
+        int32_t *bulk_fds = new int32_t[2];
+        int32_t saved_fds[2];
+        for (int32_t i = 0; i < 2; i++) {
+            int32_t fds[2];
+            assert(pipe(fds) == 0);
+            bulk_fds[i] = fds[0];
+            saved_fds[i] = fds[0];
+            close(fds[1]);
+        }
+        ghostlock::support::BulkFdOwner owner(bulk_fds, 2);
+        owner.reset();
+        assert(!owner.valid() && owner.size() == 0);
+        for (int32_t i = 0; i < 2; i++) {
+            assert(fcntl(saved_fds[i], F_GETFD) == -1 && errno == EBADF);
+        }
+    }
+    assert(open_fd_count() == initial_fd_count);
+
     int32_t scope_calls = 0;
     {
         auto first = ghostlock::support::make_scope_exit([&]() noexcept { ++scope_calls; });

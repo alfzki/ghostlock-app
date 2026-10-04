@@ -103,6 +103,43 @@ namespace ghostlock::support {
         int32_t fd_ = -1;
     };
 
+    class BulkFdOwner final {
+    public:
+        constexpr BulkFdOwner() noexcept = default;
+
+        BulkFdOwner(int32_t *fds, std::size_t count) noexcept
+            : fds_(fds), count_(count) {
+        }
+
+        ~BulkFdOwner() noexcept;
+
+        BulkFdOwner(const BulkFdOwner &) = delete;
+
+        BulkFdOwner &operator=(const BulkFdOwner &) = delete;
+
+        BulkFdOwner(BulkFdOwner &&other) noexcept;
+
+        BulkFdOwner &operator=(BulkFdOwner &&other) noexcept;
+
+        [[nodiscard]] bool valid() const noexcept { return fds_ != nullptr; }
+        [[nodiscard]] std::size_t size() const noexcept { return count_; }
+        [[nodiscard]] int32_t *get() const noexcept { return fds_; }
+        [[nodiscard]] int32_t operator[](std::size_t index) const noexcept {
+            return fds_[index];
+        }
+
+        [[nodiscard]] int32_t *release() noexcept;
+
+        [[nodiscard]] int32_t *release_to_process_lifetime(
+            std::string_view reason) noexcept;
+
+        void reset() noexcept;
+
+    private:
+        int32_t *fds_ = nullptr;
+        std::size_t count_ = 0;
+    };
+
     class MappedRegion final {
     public:
         constexpr MappedRegion() noexcept = default;

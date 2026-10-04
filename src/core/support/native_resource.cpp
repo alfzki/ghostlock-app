@@ -35,6 +35,45 @@ namespace ghostlock::support {
         }
     }
 
+    BulkFdOwner::~BulkFdOwner() noexcept { reset(); }
+
+    BulkFdOwner::BulkFdOwner(BulkFdOwner &&other) noexcept
+        : fds_(std::exchange(other.fds_, nullptr)),
+          count_(std::exchange(other.count_, 0)) {
+    }
+
+    BulkFdOwner &BulkFdOwner::operator=(BulkFdOwner &&other) noexcept {
+        if (this != &other) {
+            reset();
+            fds_ = std::exchange(other.fds_, nullptr);
+            count_ = std::exchange(other.count_, 0);
+        }
+        return *this;
+    }
+
+    int32_t *BulkFdOwner::release() noexcept {
+        count_ = 0;
+        return std::exchange(fds_, nullptr);
+    }
+
+    int32_t *BulkFdOwner::release_to_process_lifetime(std::string_view reason) noexcept {
+        (void) reason;
+        return release();
+    }
+
+    void BulkFdOwner::reset() noexcept {
+        int32_t *old = std::exchange(fds_, nullptr);
+        const std::size_t old_count = std::exchange(count_, 0);
+        if (old && old_count) {
+            const int32_t saved_errno = errno;
+            for (std::size_t i = 0; i < old_count; i++) {
+                if (old[i] >= 0) close(old[i]);
+            }
+            delete[] old;
+            errno = saved_errno;
+        }
+    }
+
     MappedRegion::~MappedRegion() noexcept { reset(); }
 
     MappedRegion::MappedRegion(MappedRegion &&other) noexcept
