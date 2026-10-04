@@ -49,3 +49,28 @@ No retcon of gate archives 01–04; this plan builds on them. Rollback = `git re
 - [ ] disambiguate H1/H2/H3
 - [ ] Wave 1: sub-plan per outcome, implement, disasm gate, device gate
 - [ ] archive
+
+## Wave 0 result resolved & oracle confirmation (2026-10-04)
+Baseline re-confirmed on device: `CMP_REQUEUE_PI ret=-1 errno=35` (EDEADLK),
+waiter's `WAIT_REQUEUE_PI ret=-1 errno=110` (ETIMEDOUT).
+
+Oracle (kg/futex + locking/rtmutex.c) identifies the exact EDEADLK trigger:
+
+- Kernel path: `futex_requeue` -> `futex_requeue_pi` -> `rt_mutex_futex_requeue`
+  -> `rt_mutex_detect_deadlock` (kernel/locking/rtmutex.c).
+- The check is a **wait-graph cycle** check, not a per-caller ownership test.
+- Cycle at CMP time:
+  waiter holds chain_futex (:24)
+    and is parked to be requeued onto target_futex
+  owner holds target_futex (:78)
+    and blocks on chain_futex (:90)
+  -> requeueing waiter onto target_futex completes waiter->target->owner->chain->waiter
+     so `rt_mutex_detect_deadlock` returns -EDEADLK to main (:182).
+- Waiter's ETIMEDOUT is a downstream symptom: requeue failed (EDEADLK), waiter was
+  never moved to target_futex, so its wait on wait_futex ran to timeout.
+
+Fix direction: owner must NOT hold target_futex when main calls CMP_REQUEUE_PI.
+- Move owner's `FUTEX_LOCK_PI target_futex` to occur only after the requeue
+  (i.e. after CMP_REQUEUE_PI succeeds), so no cycle exists at requeue time.
+- This is the failing ordering, replaces the earlier H1/H2/H3 sections as the
+  decisive cause.
