@@ -1,0 +1,9 @@
+  DIFF owner_thread: instruction count base=69 cur=66
+  IDENTICAL waiter_thread (258 instructions, strict)
+  IDENTICAL consumer_thread (179 instructions, strict)
+  IDENTICAL run_main_route_threads (413 instructions, strict)
+  IDENTICAL do_kernel5_fake_lock_route (173 instructions, strict)
+  IDENTICAL do_one_write (126 instructions, strict)
+  STALE multicast_owner_worker: not present in either binary
+  STALE multicast_waiter_worker: not present in either binary
+  RESULT: FAIL

