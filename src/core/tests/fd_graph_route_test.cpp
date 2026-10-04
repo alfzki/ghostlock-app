@@ -66,6 +66,45 @@ int32_t main(void) {
         assert(fcntl(fds[1], F_GETFD) == -1 && errno == EBADF);
     }
 
+    /* Mode/bit/marker helpers follow scoping 2.18.2: Zero runs the
+     * zero_byte_redirect lane (chain only); other modes need bit4 too. */
+    static_assert(ghostlock::route::fd_graph::kFdGraphGenmark0 == 0x304b52414d4e4547ULL);
+    assert(!ghostlock::route::fd_graph::fd_graph_mode_needs_bit4(
+        ghostlock::memory::WriteMode::Zero));
+    assert(ghostlock::route::fd_graph::fd_graph_mode_needs_bit4(
+        ghostlock::memory::WriteMode::Credential));
+    assert(ghostlock::route::fd_graph::fd_graph_mode_needs_bit4(
+        ghostlock::memory::WriteMode::Disabled));
+    assert(ghostlock::route::fd_graph::fd_graph_can_merge_set(0x10));
+    assert(ghostlock::route::fd_graph::fd_graph_can_merge_set(0x1f));
+    assert(!ghostlock::route::fd_graph::fd_graph_can_merge_set(0x00));
+    assert(!ghostlock::route::fd_graph::fd_graph_can_merge_set(0x42));
+    assert(!ghostlock::route::fd_graph::fd_graph_genmark_changed(
+        ghostlock::route::fd_graph::kFdGraphGenmark0));
+    assert(ghostlock::route::fd_graph::fd_graph_genmark_changed(0));
+    assert(ghostlock::route::fd_graph::fd_graph_round_success(true, true, false));
+    assert(ghostlock::route::fd_graph::fd_graph_round_success(true, true, true));
+    assert(!ghostlock::route::fd_graph::fd_graph_round_success(true, false, false));
+    assert(!ghostlock::route::fd_graph::fd_graph_round_success(true, false, true));
+    assert(ghostlock::route::fd_graph::fd_graph_round_success(false, true, true));
+    assert(!ghostlock::route::fd_graph::fd_graph_round_success(false, true, false));
+    assert(!ghostlock::route::fd_graph::fd_graph_round_success(false, false, false));
+    assert(!ghostlock::route::fd_graph::fd_graph_round_success(false, false, true));
+
+    assert(ghostlock::route::fd_graph::fd_graph_table_high(0xffffff8000000000ULL, 0) ==
+           0xffffff8000000100ULL);
+    assert(ghostlock::route::fd_graph::fd_graph_table_high(0xffffff8000000000ULL, 1) ==
+           0xffffff8000000900ULL);
+    assert(ghostlock::route::fd_graph::fd_graph_table_high(0xffffff8000000000ULL, 15) ==
+           0xffffff8000007900ULL);
+
+    assert(ghostlock::route::fd_graph::fd_graph_cmd_accepted('W'));
+    assert(!ghostlock::route::fd_graph::fd_graph_cmd_accepted('X'));
+    assert(!ghostlock::route::fd_graph::fd_graph_cmd_accepted(0));
+    assert(ghostlock::route::fd_graph::fd_graph_enforce_pass('0'));
+    assert(!ghostlock::route::fd_graph::fd_graph_enforce_pass('1'));
+    assert(ghostlock::route::fd_graph::fd_graph_enforce_pass(0));
+
     /* fail() records step and errno for the caller's log. */
     assert(context.fail(59, 5) == -1);
     assert(context.status.step == 59);
